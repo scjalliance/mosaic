@@ -18,6 +18,10 @@ type PhaseBudgetReport struct {
 
 	// Totals contains the aggregated metrics across all phases.
 	Totals BudgetMetrics `json:"totals"`
+
+	// Warnings contains human-readable warnings generated during report
+	// computation (e.g. missing rate data for members).
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // PhaseBudgetSummary contains budget metrics for a single phase.
@@ -228,41 +232,47 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	}
 	slog.Info("fetched work plans", "count", len(plans))
 
-	// Collect unique member IDs from future work plans for rate resolution.
+	// Collect unique member IDs and names from future work plans for rate resolution.
 	today := time.Now()
 	todayStr := today.Format("2006-01-02")
-	memberSet := make(map[int]struct{})
+	memberNames := make(map[int]string)
 	for _, wp := range plans {
 		if wp.StartDate >= todayStr {
-			memberSet[wp.MemberID] = struct{}{}
+			if _, ok := memberNames[wp.MemberID]; !ok {
+				memberNames[wp.MemberID] = wp.MemberName
+			}
 		}
 	}
-	memberIDs := make([]int, 0, len(memberSet))
-	for id := range memberSet {
+	memberIDs := make([]int, 0, len(memberNames))
+	for id := range memberNames {
 		memberIDs = append(memberIDs, id)
 	}
 
-	memberRates, err := c.resolveMemberRates(ctx, projectID, memberIDs, today)
+	memberRates, rateWarnings, err := c.resolveMemberRates(ctx, projectID, memberIDs, memberNames, today)
 	if err != nil {
 		return nil, fmt.Errorf("resolving member rates: %w", err)
 	}
 
-	return ComputePhaseBudget(projectID, phases, entries, plans, memberRates, today), nil
+	report := ComputePhaseBudget(projectID, phases, entries, plans, memberRates, today)
+	report.Warnings = rateWarnings
+	return report, nil
 }
 
 // resolveMemberRates builds a map of memberID -> effective bill rate for the
 // given project. It fetches the rate table and member-project-rates, preferring
 // project-specific rates over global bill rates. The rate amount comes from
 // the Rate table via rate_id, not from the MemberProjectRate directly.
-func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberIDs []int, today time.Time) (map[int]float64, error) {
+func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberIDs []int, memberNames map[int]string, today time.Time) (map[int]float64, []string, error) {
 	if len(memberIDs) == 0 {
-		return make(map[int]float64), nil
+		return make(map[int]float64), nil, nil
 	}
+
+	var warnings []string
 
 	// Fetch all rates to build rateID -> amount lookup.
 	rates, err := c.ListRates(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("fetching rates: %w", err)
+		return nil, nil, fmt.Errorf("fetching rates: %w", err)
 	}
 	rateAmounts := make(map[int]float64, len(rates))
 	for _, r := range rates {
@@ -274,7 +284,7 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 	// Fetch bill rates as fallback.
 	billRates, err := c.ListBillRates(ctx, BillRateFilter{})
 	if err != nil {
-		return nil, fmt.Errorf("fetching bill rates: %w", err)
+		return nil, nil, fmt.Errorf("fetching bill rates: %w", err)
 	}
 	todayStr := today.Format("2006-01-02")
 	fallbackRates := make(map[int]float64)
@@ -297,6 +307,7 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		})
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
+			warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate, using fallback global rate instead", memberDisplayName(memberNames, mid)))
 			result[mid] = fallbackRates[mid]
 			continue
 		}
@@ -331,10 +342,20 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 			result[mid] = fallback
 		} else {
 			slog.Warn("no rate found for member", "member_id", mid)
+			warnings = append(warnings, fmt.Sprintf("%s: no bill rate found, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
 		}
 	}
 
-	return result, nil
+	return result, warnings, nil
+}
+
+// memberDisplayName returns a human-readable label for a member, preferring
+// the name from memberNames and falling back to the numeric ID.
+func memberDisplayName(memberNames map[int]string, memberID int) string {
+	if name, ok := memberNames[memberID]; ok && name != "" {
+		return name
+	}
+	return fmt.Sprintf("Member %d", memberID)
 }
 
 // parseOptionalFloat parses a *string to float64, returning 0 if nil or unparseable.
