@@ -307,8 +307,12 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		})
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
-			warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate, using fallback global rate instead", memberDisplayName(memberNames, mid)))
-			result[mid] = fallbackRates[mid]
+			if fallback, ok := fallbackRates[mid]; ok {
+				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate, using fallback global rate instead", memberDisplayName(memberNames, mid)))
+				result[mid] = fallback
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate and no fallback rate exists, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
+			}
 			continue
 		}
 
