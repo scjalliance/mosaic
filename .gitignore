@@ -1,0 +1,52 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Build output
+/bin/
+/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.secrets/
+.env
+*.env
+credentials.json
+
+# Cached API docs
+.cache/
+
+# Dependency directories
+vendor/
+
+# Local Claude instructions
+CLAUDE.md
+
+# Internal development artifacts
+docs/
+
+# CLI binary
+/mosaic-cli
