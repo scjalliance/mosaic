@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -63,71 +65,111 @@ func (c *Client) apiPath(dataType string, segments ...string) string {
 	return path
 }
 
-// do executes an HTTP request against the Mosaic API, handling authentication
-// headers, JSON encoding/decoding, and error mapping.
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, result any) error {
-	reqURL := strings.TrimRight(c.baseURL, "/") + path
+// maxRetries is the number of times to retry a request after a rate limit.
+const maxRetries = 3
 
-	var bodyReader io.Reader
+// minRetryDelay is the minimum delay between retries when the server returns
+// a Retry-After of 0 seconds.
+const minRetryDelay = 2 * time.Second
+
+// do executes an HTTP request against the Mosaic API, handling authentication
+// headers, JSON encoding/decoding, error mapping, and automatic retry on rate
+// limit (429) responses.
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, result any) error {
+	// Marshal the body once so we can replay it on retries.
+	var bodyBytes []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		bodyBytes, err = json.Marshal(body)
 		if err != nil {
 			return fmt.Errorf("marshaling request body: %w", err)
 		}
-		bodyReader = bytes.NewReader(data)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
-	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
-	}
-
-	// Set authentication and required multi-tenant headers.
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-tenant", c.tenant)
-	req.Header.Set("x-realm-id", c.realmID)
-	if c.origin != "" {
-		req.Header.Set("Origin", c.origin)
-	}
-
-	// Set query parameters.
-	if len(query) > 0 {
-		q := req.URL.Query()
-		for k, vals := range query {
-			for _, v := range vals {
-				q.Add(k, v)
-			}
+	for attempt := range maxRetries + 1 {
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
-		req.URL.RawQuery = q.Encode()
-	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("executing request: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.baseURL, "/")+path, bodyReader)
+		if err != nil {
+			return fmt.Errorf("creating request: %w", err)
+		}
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("reading response body: %w", err)
-	}
+		// Set authentication and required multi-tenant headers.
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("x-tenant", c.tenant)
+		req.Header.Set("x-realm-id", c.realmID)
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
 
-	if resp.StatusCode >= 400 {
-		return c.handleErrorResponse(resp, respBody)
-	}
+		// Set query parameters.
+		if len(query) > 0 {
+			q := req.URL.Query()
+			for k, vals := range query {
+				for _, v := range vals {
+					q.Add(k, v)
+				}
+			}
+			req.URL.RawQuery = q.Encode()
+		}
 
-	// For DELETE with 204 No Content, skip decoding.
-	if resp.StatusCode == http.StatusNoContent || result == nil {
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("executing request: %w", err)
+		}
+
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("reading response body: %w", err)
+		}
+
+		if resp.StatusCode >= 400 {
+			apiErr := c.handleErrorResponse(resp, respBody)
+
+			// Auto-retry on rate limit if we have attempts left.
+			var rlErr *RateLimitError
+			if errors.As(apiErr, &rlErr) && attempt < maxRetries {
+				delay := rlErr.RetryAfter
+				if delay < minRetryDelay {
+					delay = minRetryDelay
+				}
+				slog.Warn("rate limited, retrying",
+					"attempt", attempt+1,
+					"max_retries", maxRetries,
+					"retry_after", delay,
+					"path", path,
+				)
+				select {
+				case <-time.After(delay):
+					continue
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+
+			return apiErr
+		}
+
+		// For DELETE with 204 No Content, skip decoding.
+		if resp.StatusCode == http.StatusNoContent || result == nil {
+			return nil
+		}
+
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("decoding response: %w", err)
+		}
+
 		return nil
 	}
 
-	if err := json.Unmarshal(respBody, result); err != nil {
-		return fmt.Errorf("decoding response: %w", err)
-	}
-
-	return nil
+	// Should not be reached, but just in case.
+	return fmt.Errorf("exhausted retries for %s %s", method, path)
 }
 
 // handleErrorResponse maps an HTTP error response to the appropriate error type.
