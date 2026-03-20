@@ -1,0 +1,118 @@
+package mosaic
+
+import (
+	"testing"
+	"time"
+)
+
+func strPtr(s string) *string { return &s }
+func intPtr(i int) *int       { return &i }
+
+func TestComputePhaseBudget_WithSubPhases(t *testing.T) {
+	phases := []Phase{
+		{MosaicID: 100, Name: "Design", PhaseNumber: strPtr("#08"), Total: strPtr("150000")},
+		{MosaicID: 201, Name: "Sub A", PhaseNumber: strPtr("01"), ParentID: intPtr(100), Total: strPtr("90000")},
+		{MosaicID: 202, Name: "Sub B", PhaseNumber: strPtr("02"), ParentID: intPtr(100), Total: strPtr("60000")},
+	}
+	entries := []TimeEntry{
+		{PhaseID: 201, Hours: "10", Rate: strPtr("100"), PhaseName: "Sub A"},
+		{PhaseID: 202, Hours: "5", Rate: strPtr("120"), PhaseName: "Sub B"},
+	}
+	var plans []WorkPlan
+	memberRates := map[int]float64{}
+	today := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+
+	report := ComputePhaseBudget(1, phases, entries, plans, memberRates, today)
+
+	if len(report.Phases) != 1 {
+		t.Fatalf("expected 1 top-level phase, got %d", len(report.Phases))
+	}
+	phase := report.Phases[0]
+
+	// Parent budget and rollup spent
+	if phase.Metrics.BudgetDollars != 150000 {
+		t.Errorf("parent budget: want 150000, got %f", phase.Metrics.BudgetDollars)
+	}
+	if phase.Metrics.SpentDollars != 1600 {
+		t.Errorf("parent spent$: want 1600, got %f", phase.Metrics.SpentDollars)
+	}
+
+	// Tasks
+	if len(phase.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(phase.Tasks))
+	}
+
+	task01 := phase.Tasks[0]
+	if task01.TaskID != 201 {
+		t.Errorf("task01 TaskID: want 201, got %d", task01.TaskID)
+	}
+	if task01.TaskNumber != "01" {
+		t.Errorf("task01 TaskNumber: want '01', got %q", task01.TaskNumber)
+	}
+	if task01.Metrics.BudgetDollars != 90000 {
+		t.Errorf("task01 budget: want 90000, got %f", task01.Metrics.BudgetDollars)
+	}
+	if task01.Metrics.SpentDollars != 1000 {
+		t.Errorf("task01 spent$: want 1000, got %f", task01.Metrics.SpentDollars)
+	}
+	if task01.Metrics.SpentHours != 10 {
+		t.Errorf("task01 spent hours: want 10, got %f", task01.Metrics.SpentHours)
+	}
+
+	task02 := phase.Tasks[1]
+	if task02.TaskID != 202 {
+		t.Errorf("task02 TaskID: want 202, got %d", task02.TaskID)
+	}
+	if task02.Metrics.BudgetDollars != 60000 {
+		t.Errorf("task02 budget: want 60000, got %f", task02.Metrics.BudgetDollars)
+	}
+	if task02.Metrics.SpentDollars != 600 {
+		t.Errorf("task02 spent$: want 600, got %f", task02.Metrics.SpentDollars)
+	}
+	if task02.Metrics.SpentHours != 5 {
+		t.Errorf("task02 spent hours: want 5, got %f", task02.Metrics.SpentHours)
+	}
+}
+
+func TestComputePhaseBudget_NoSubPhases(t *testing.T) {
+	phases := []Phase{
+		{MosaicID: 100, Name: "Design", PhaseNumber: strPtr("#01"), Total: strPtr("50000")},
+	}
+	entries := []TimeEntry{
+		{PhaseID: 100, Hours: "10", Rate: strPtr("100"), PhaseName: "Design"},
+	}
+	var plans []WorkPlan
+	memberRates := map[int]float64{}
+	today := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+
+	report := ComputePhaseBudget(1, phases, entries, plans, memberRates, today)
+
+	if len(report.Phases) != 1 {
+		t.Fatalf("expected 1 phase, got %d", len(report.Phases))
+	}
+	phase := report.Phases[0]
+
+	if phase.Tasks != nil {
+		t.Errorf("expected Tasks to be nil for phase without sub-phases, got %v", phase.Tasks)
+	}
+	if phase.Metrics.SpentDollars != 1000 {
+		t.Errorf("spent$: want 1000, got %f", phase.Metrics.SpentDollars)
+	}
+}
+
+func TestComputePhaseBudget_SubPhaseBudgetWarning(t *testing.T) {
+	phases := []Phase{
+		{MosaicID: 100, Name: "Design", PhaseNumber: strPtr("#01"), Total: strPtr("100000")},
+		{MosaicID: 201, Name: "Sub A", PhaseNumber: strPtr("01"), ParentID: intPtr(100), Total: strPtr("60000")},
+	}
+	var entries []TimeEntry
+	var plans []WorkPlan
+	memberRates := map[int]float64{}
+	today := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+
+	report := ComputePhaseBudget(1, phases, entries, plans, memberRates, today)
+
+	if len(report.Warnings) == 0 {
+		t.Error("expected warnings about budget sum mismatch, got none")
+	}
+}

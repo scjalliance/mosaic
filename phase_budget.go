@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,6 +41,19 @@ type PhaseBudgetSummary struct {
 
 	// Metrics contains the budget/spent/planned/remaining breakdown.
 	Metrics BudgetMetrics `json:"metrics"`
+
+	// Tasks contains per-sub-phase (task) budget summaries, if this phase
+	// has sub-phases. Nil when there are no sub-phases.
+	Tasks []TaskBudgetSummary `json:"tasks,omitempty"`
+}
+
+// TaskBudgetSummary contains budget metrics for a single sub-phase (task)
+// within a parent phase.
+type TaskBudgetSummary struct {
+	TaskID     int           `json:"task_id"`
+	TaskName   string        `json:"task_name"`
+	TaskNumber string        `json:"task_number"`
+	Metrics    BudgetMetrics `json:"metrics"`
 }
 
 // BudgetMetrics contains dollar and hour breakdowns for budget tracking.
@@ -84,11 +98,16 @@ type BudgetMetrics struct {
 func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plans []WorkPlan, memberRates map[int]float64, today time.Time) *PhaseBudgetReport {
 	todayStr := today.Format("2006-01-02")
 
-	// Build child-to-parent mapping and identify top-level phases.
-	childToParent := make(map[int]int) // childID -> parentID
-	for _, p := range phases {
+	// Build child-to-parent mapping, parent-to-children mapping, and phase lookup.
+	childToParent := make(map[int]int)    // childID -> parentID
+	parentToChildren := make(map[int][]int) // parentID -> []childID
+	phaseByID := make(map[int]*Phase, len(phases))
+	for i := range phases {
+		p := &phases[i]
+		phaseByID[p.MosaicID] = p
 		if p.ParentID != nil {
 			childToParent[p.MosaicID] = *p.ParentID
+			parentToChildren[*p.ParentID] = append(parentToChildren[*p.ParentID], p.MosaicID)
 		}
 	}
 
@@ -146,7 +165,27 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		return acc
 	}
 
+	// Sub-phase (task) accumulators: subPhaseID -> metrics.
+	type subAccumulator struct {
+		spentDollars   float64
+		spentHours     float64
+		plannedDollars float64
+		plannedHours   float64
+	}
+	subMap := make(map[int]*subAccumulator)
+
+	// ensureSub returns or creates the sub-phase accumulator.
+	ensureSub := func(subPhaseID int) *subAccumulator {
+		sa, ok := subMap[subPhaseID]
+		if !ok {
+			sa = &subAccumulator{}
+			subMap[subPhaseID] = sa
+		}
+		return sa
+	}
+
 	// Accumulate spent from time entries, rolling up to parent phases.
+	// Also track per-sub-phase spent when the entry is on a sub-phase.
 	for _, e := range entries {
 		parentID := resolveParent(e.PhaseID)
 		acc := ensurePhase(parentID, e.PhaseName)
@@ -154,9 +193,17 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		rate := parseOptionalFloat(e.Rate)
 		acc.summary.Metrics.SpentHours += hours
 		acc.summary.Metrics.SpentDollars += hours * rate
+
+		// Track sub-phase level if this entry is on a child phase.
+		if _, isChild := childToParent[e.PhaseID]; isChild {
+			sa := ensureSub(e.PhaseID)
+			sa.spentHours += hours
+			sa.spentDollars += hours * rate
+		}
 	}
 
 	// Accumulate planned from future work plans, rolling up to parent phases.
+	// Also track per-sub-phase planned when the plan is on a sub-phase.
 	for _, wp := range plans {
 		if wp.StartDate < todayStr {
 			continue
@@ -167,7 +214,16 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		rate := memberRates[wp.MemberID]
 		acc.summary.Metrics.PlannedHours += hours
 		acc.summary.Metrics.PlannedDollars += hours * rate
+
+		// Track sub-phase level if this plan is on a child phase.
+		if _, isChild := childToParent[wp.PhaseID]; isChild {
+			sa := ensureSub(wp.PhaseID)
+			sa.plannedHours += hours
+			sa.plannedDollars += hours * rate
+		}
 	}
+
+	var warnings []string
 
 	// Compute remaining and percentages, build result.
 	report := &PhaseBudgetReport{
@@ -182,6 +238,57 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		m.RemainingHours = m.BudgetHours - m.SpentHours - m.PlannedHours
 		if m.BudgetDollars > 0 {
 			m.PercentSpent = m.SpentDollars / m.BudgetDollars * 100
+		}
+
+		// Build Tasks slice for phases that have children.
+		if children, ok := parentToChildren[pid]; ok && len(children) > 0 {
+			var taskBudgetSum float64
+			tasks := make([]TaskBudgetSummary, 0, len(children))
+			for _, childID := range children {
+				child := phaseByID[childID]
+				taskNum := ""
+				if child.PhaseNumber != nil {
+					taskNum = strings.TrimPrefix(*child.PhaseNumber, "#")
+				}
+				budget := parseOptionalFloat(child.Total)
+				taskBudgetSum += budget
+
+				tm := BudgetMetrics{
+					BudgetDollars: budget,
+					BudgetHours:   parseOptionalFloat(child.EstimatedHours),
+				}
+				if sa, ok := subMap[childID]; ok {
+					tm.SpentDollars = sa.spentDollars
+					tm.SpentHours = sa.spentHours
+					tm.PlannedDollars = sa.plannedDollars
+					tm.PlannedHours = sa.plannedHours
+				}
+				tm.RemainingDollars = tm.BudgetDollars - tm.SpentDollars - tm.PlannedDollars
+				tm.RemainingHours = tm.BudgetHours - tm.SpentHours - tm.PlannedHours
+				if tm.BudgetDollars > 0 {
+					tm.PercentSpent = tm.SpentDollars / tm.BudgetDollars * 100
+				}
+
+				tasks = append(tasks, TaskBudgetSummary{
+					TaskID:     childID,
+					TaskName:   child.Name,
+					TaskNumber: taskNum,
+					Metrics:    tm,
+				})
+			}
+			acc.summary.Tasks = tasks
+
+			// Warn if sub-phase budgets don't sum to parent budget.
+			if m.BudgetDollars > 0 && taskBudgetSum != m.BudgetDollars {
+				phaseName := acc.summary.PhaseName
+				if acc.summary.PhaseNumber != nil {
+					phaseName = *acc.summary.PhaseNumber + " " + phaseName
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"phase %s: sub-phase budgets sum to $%.2f but parent budget is $%.2f",
+					phaseName, taskBudgetSum, m.BudgetDollars,
+				))
+			}
 		}
 
 		report.Phases = append(report.Phases, acc.summary)
@@ -200,6 +307,8 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 	if t.BudgetDollars > 0 {
 		t.PercentSpent = t.SpentDollars / t.BudgetDollars * 100
 	}
+
+	report.Warnings = append(report.Warnings, warnings...)
 
 	return report
 }
