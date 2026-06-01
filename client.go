@@ -248,3 +248,14 @@ func (c *Client) deleteWithQuery(ctx context.Context, path string, query url.Val
 func (c *Client) RawGet(ctx context.Context, path string, query url.Values, result any) error {
 	return c.do(ctx, http.MethodGet, path, query, nil, result)
 }
+
+// RawPut performs a PUT request against an arbitrary API path, sending body as
+// the JSON request payload and decoding the response into result. The path
+// should be the full path starting with /api/ (the base URL is prepended
+// automatically). This is useful for round-tripping a resource's raw JSON
+// representation (read-modify-write) without modeling every field in a typed
+// struct, so fields not covered by a struct are preserved. Pass a nil result to
+// ignore the response body.
+func (c *Client) RawPut(ctx context.Context, path string, body any, result any) error {
+	return c.do(ctx, http.MethodPut, path, nil, body, result)
+}
