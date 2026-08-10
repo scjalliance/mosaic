@@ -7,6 +7,36 @@ import (
 	"strconv"
 )
 
+// HourLock describes how a work plan's hour allocation is locked. The API
+// returns it as a string enum.
+//
+// Breaking change: WorkPlan.HourLock was previously typed *bool, which no
+// longer matches the API — work plan responses carry values such as
+// "total_hour", so every decode failed. Callers that compared against a
+// boolean must switch to the HourLock constants below.
+type HourLock string
+
+// Known HourLock values, as observed in live API responses.
+const (
+	HourLockTotal           HourLock = "total_hour"
+	HourLockDaily           HourLock = "daily_hour"
+	HourLockWeekly          HourLock = "weekly_hour"
+	HourLockPercentCapacity HourLock = "percent_capacity"
+)
+
+// DayLock describes how a work plan's day allocation is locked. The API
+// returns it as a string enum.
+//
+// Breaking change: WorkPlan.DayLock was previously typed *bool. See HourLock
+// for details.
+type DayLock string
+
+// Known DayLock values, as observed in live API responses.
+const (
+	DayLockNone    DayLock = "none"
+	DayLockWorkDay DayLock = "work_day"
+)
+
 // WorkPlan represents a work plan entry in Mosaic.
 // Field names correspond to the snake_case JSON fields used by the Mosaic API.
 type WorkPlan struct {
@@ -75,11 +105,13 @@ type WorkPlan struct {
 	// BudgetStatus is the budget status of the work plan.
 	BudgetStatus string `json:"budget_status,omitempty"`
 
-	// DayLock indicates whether the day allocation is locked.
-	DayLock *bool `json:"day_lock,omitempty"`
+	// DayLock describes which day allocation is locked. See the DayLock
+	// constants for known values.
+	DayLock DayLock `json:"day_lock,omitempty"`
 
-	// HourLock indicates whether the hour allocation is locked.
-	HourLock *bool `json:"hour_lock,omitempty"`
+	// HourLock describes how the hour allocation is locked. See the HourLock
+	// constants for known values.
+	HourLock HourLock `json:"hour_lock,omitempty"`
 
 	// LockHour is the locked hour value when hour lock is enabled.
 	LockHour float64 `json:"lock_hour,omitempty"`
