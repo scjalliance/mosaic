@@ -363,7 +363,10 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	}
 
 	report := ComputePhaseBudget(projectID, phases, entries, plans, memberRates, today)
-	report.Warnings = rateWarnings
+	// Append: ComputePhaseBudget has already recorded its own warnings, such as
+	// sub-phase budgets that do not sum to their parent. Assigning here dropped
+	// those, so callers only ever saw rate warnings.
+	report.Warnings = append(report.Warnings, rateWarnings...)
 	return report, nil
 }
 
@@ -416,8 +419,8 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		})
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
-			// Built from rateLookupWarningMarker so RateLookupWarning keeps
-			// matching these if the wording is ever edited.
+			// Built from rateLookupWarningMarker so RateWarning keeps matching
+			// these if the wording is ever edited.
 			if fallback, ok := fallbackRates[mid]; ok {
 				warnings = append(warnings, fmt.Sprintf("%s: %s, using fallback global rate instead",
 					memberDisplayName(memberNames, mid), rateLookupWarningMarker))
