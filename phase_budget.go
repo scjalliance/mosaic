@@ -416,11 +416,15 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		})
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
+			// Built from rateLookupWarningMarker so RateLookupWarning keeps
+			// matching these if the wording is ever edited.
 			if fallback, ok := fallbackRates[mid]; ok {
-				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate, using fallback global rate instead", memberDisplayName(memberNames, mid)))
+				warnings = append(warnings, fmt.Sprintf("%s: %s, using fallback global rate instead",
+					memberDisplayName(memberNames, mid), rateLookupWarningMarker))
 				result[mid] = fallback
 			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate and no fallback rate exists, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
+				warnings = append(warnings, fmt.Sprintf("%s: %s and no fallback rate exists, so planned dollar amounts for this person will be $0",
+					memberDisplayName(memberNames, mid), rateLookupWarningMarker))
 			}
 			continue
 		}
@@ -455,7 +459,10 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 			result[mid] = fallback
 		} else {
 			slog.Warn("no rate found for member", "member_id", mid)
-			warnings = append(warnings, fmt.Sprintf("%s: no bill rate found, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
+			// Built from noBillRateWarningMarker so RateWarning keeps matching
+			// this if the wording is ever edited.
+			warnings = append(warnings, fmt.Sprintf("%s: %s, so planned dollar amounts for this person will be $0",
+				memberDisplayName(memberNames, mid), noBillRateWarningMarker))
 		}
 	}
 
