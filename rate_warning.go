@@ -53,7 +53,19 @@ func noBillRateWarning(member string) string {
 // A caller deciding whether a project is worth reporting on can use this to
 // tell those apart from a warning about the data itself, such as sub-phase
 // budgets that do not sum to their parent.
+// A bill-rate warning reads "<member>: <marker>...", so the marker is matched
+// where the builders put it rather than anywhere in the string. Searching the
+// whole message would let a phase named, say, "no bill rate found" turn its
+// budget warning ("phase 01 no bill rate found: sub-phase budgets sum to ...")
+// into a rate warning, and drop a project the report is supposed to list.
+//
+// A member name containing ": " would fail to classify and leave the project in
+// the report, which is the safe direction to be wrong in.
 func RateWarning(w string) bool {
-	return strings.Contains(w, rateLookupWarningMarker) ||
-		strings.Contains(w, noBillRateWarningMarker)
+	_, rest, found := strings.Cut(w, ": ")
+	if !found {
+		return false
+	}
+	return strings.HasPrefix(rest, rateLookupWarningMarker) ||
+		strings.HasPrefix(rest, noBillRateWarningMarker)
 }

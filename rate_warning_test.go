@@ -54,3 +54,18 @@ func TestRateWarningIgnoresBudgetWarnings(t *testing.T) {
 		}
 	}
 }
+
+// Phase names come from Mosaic and can say anything, including the text of a
+// rate warning. Matching the marker anywhere in the message would reclassify
+// this budget warning and drop a project the report is supposed to list.
+func TestRateWarningIgnoresMarkersInsidePhaseNames(t *testing.T) {
+	for _, name := range []string{
+		"no bill rate found",
+		"could not look up project-specific rate",
+	} {
+		w := "phase 01 " + name + ": sub-phase budgets sum to $1000.00 but parent budget is $1200.00"
+		if RateWarning(w) {
+			t.Errorf("RateWarning(%q) = true, want false", w)
+		}
+	}
+}
