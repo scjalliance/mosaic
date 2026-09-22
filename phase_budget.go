@@ -4,10 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// budgetSumTolerance is how far sub-phase budgets may fall from their parent
+// before it is worth reporting. Half a cent: the values are dollar amounts, so
+// anything smaller is float representation rather than a real difference.
+const budgetSumTolerance = 0.005
 
 // PhaseBudgetReport contains per-phase budget metrics for a project.
 type PhaseBudgetReport struct {
@@ -99,7 +105,7 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 	todayStr := today.Format("2006-01-02")
 
 	// Build child-to-parent mapping, parent-to-children mapping, and phase lookup.
-	childToParent := make(map[int]int)    // childID -> parentID
+	childToParent := make(map[int]int)      // childID -> parentID
 	parentToChildren := make(map[int][]int) // parentID -> []childID
 	phaseByID := make(map[int]*Phase, len(phases))
 	for i := range phases {
@@ -243,6 +249,12 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		// Build Tasks slice for phases that have children.
 		if children, ok := parentToChildren[pid]; ok && len(children) > 0 {
 			var taskBudgetSum float64
+			// Whether any sub-phase was given a budget at all, which is a
+			// different question from whether they sum to more than zero. A sum
+			// of zero can also mean every Total failed to parse, or that a
+			// credit cancelled a charge exactly, and neither is a reason to go
+			// quiet about a real mismatch.
+			anySubPhaseBudgeted := false
 			tasks := make([]TaskBudgetSummary, 0, len(children))
 			for _, childID := range children {
 				child := phaseByID[childID]
@@ -252,6 +264,9 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 				}
 				budget := parseOptionalFloat(child.Total)
 				taskBudgetSum += budget
+				if child.Total != nil && strings.TrimSpace(*child.Total) != "" {
+					anySubPhaseBudgeted = true
+				}
 
 				tm := BudgetMetrics{
 					BudgetDollars: budget,
@@ -279,7 +294,20 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 			acc.summary.Tasks = tasks
 
 			// Warn if sub-phase budgets don't sum to parent budget.
-			if m.BudgetDollars > 0 && taskBudgetSum != m.BudgetDollars {
+			//
+			// Compared with a tolerance, not exactly: taskBudgetSum is an
+			// accumulation of floats parsed from strings, so two amounts that
+			// are equal to the cent routinely differ in the last bits. An
+			// exact comparison reported "sum to $99096.14 but parent budget is
+			// $99096.14", which tells a reader nothing and buries the real
+			// mismatches.
+			//
+			// Sub-phases that carry no budget at all are a different shape, not
+			// a discrepancy: the fee was entered on the parent and the work was
+			// broken out beneath it without splitting the money. Warning there
+			// would say "sum to $0.00 but parent budget is $100000.00" on every
+			// such project, with nothing behind it to act on.
+			if m.BudgetDollars > 0 && anySubPhaseBudgeted && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
 				phaseName := acc.summary.PhaseName
 				if acc.summary.PhaseNumber != nil {
 					phaseName = *acc.summary.PhaseNumber + " " + phaseName
@@ -363,7 +391,10 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	}
 
 	report := ComputePhaseBudget(projectID, phases, entries, plans, memberRates, today)
-	report.Warnings = rateWarnings
+	// Append: ComputePhaseBudget has already recorded its own warnings, such as
+	// sub-phase budgets that do not sum to their parent. Assigning here dropped
+	// those, so callers only ever saw rate warnings.
+	report.Warnings = append(report.Warnings, rateWarnings...)
 	return report, nil
 }
 
@@ -417,10 +448,10 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
 			if fallback, ok := fallbackRates[mid]; ok {
-				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate, using fallback global rate instead", memberDisplayName(memberNames, mid)))
+				warnings = append(warnings, rateLookupFallbackWarning(memberDisplayName(memberNames, mid)))
 				result[mid] = fallback
 			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: could not look up project-specific rate and no fallback rate exists, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
+				warnings = append(warnings, rateLookupNoFallbackWarning(memberDisplayName(memberNames, mid)))
 			}
 			continue
 		}
@@ -455,7 +486,7 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 			result[mid] = fallback
 		} else {
 			slog.Warn("no rate found for member", "member_id", mid)
-			warnings = append(warnings, fmt.Sprintf("%s: no bill rate found, so planned dollar amounts for this person will be $0", memberDisplayName(memberNames, mid)))
+			warnings = append(warnings, noBillRateWarning(memberDisplayName(memberNames, mid)))
 		}
 	}
 
