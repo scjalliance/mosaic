@@ -99,7 +99,7 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 	todayStr := today.Format("2006-01-02")
 
 	// Build child-to-parent mapping, parent-to-children mapping, and phase lookup.
-	childToParent := make(map[int]int)    // childID -> parentID
+	childToParent := make(map[int]int)      // childID -> parentID
 	parentToChildren := make(map[int][]int) // parentID -> []childID
 	phaseByID := make(map[int]*Phase, len(phases))
 	for i := range phases {
