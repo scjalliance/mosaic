@@ -4,10 +4,16 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// budgetSumTolerance is how far sub-phase budgets may fall from their parent
+// before it is worth reporting. Half a cent: the values are dollar amounts, so
+// anything smaller is float representation rather than a real difference.
+const budgetSumTolerance = 0.005
 
 // PhaseBudgetReport contains per-phase budget metrics for a project.
 type PhaseBudgetReport struct {
@@ -279,7 +285,14 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 			acc.summary.Tasks = tasks
 
 			// Warn if sub-phase budgets don't sum to parent budget.
-			if m.BudgetDollars > 0 && taskBudgetSum != m.BudgetDollars {
+			//
+			// Compared with a tolerance, not exactly: taskBudgetSum is an
+			// accumulation of floats parsed from strings, so two amounts that
+			// are equal to the cent routinely differ in the last bits. An
+			// exact comparison reported "sum to $99096.14 but parent budget is
+			// $99096.14", which tells a reader nothing and buries the real
+			// mismatches.
+			if m.BudgetDollars > 0 && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
 				phaseName := acc.summary.PhaseName
 				if acc.summary.PhaseNumber != nil {
 					phaseName = *acc.summary.PhaseNumber + " " + phaseName
