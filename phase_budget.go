@@ -249,6 +249,12 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 		// Build Tasks slice for phases that have children.
 		if children, ok := parentToChildren[pid]; ok && len(children) > 0 {
 			var taskBudgetSum float64
+			// Whether any sub-phase was given a budget at all, which is a
+			// different question from whether they sum to more than zero. A sum
+			// of zero can also mean every Total failed to parse, or that a
+			// credit cancelled a charge exactly, and neither is a reason to go
+			// quiet about a real mismatch.
+			anySubPhaseBudgeted := false
 			tasks := make([]TaskBudgetSummary, 0, len(children))
 			for _, childID := range children {
 				child := phaseByID[childID]
@@ -258,6 +264,9 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 				}
 				budget := parseOptionalFloat(child.Total)
 				taskBudgetSum += budget
+				if child.Total != nil && strings.TrimSpace(*child.Total) != "" {
+					anySubPhaseBudgeted = true
+				}
 
 				tm := BudgetMetrics{
 					BudgetDollars: budget,
@@ -298,7 +307,7 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 			// broken out beneath it without splitting the money. Warning there
 			// would say "sum to $0.00 but parent budget is $100000.00" on every
 			// such project, with nothing behind it to act on.
-			if m.BudgetDollars > 0 && taskBudgetSum > 0 && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
+			if m.BudgetDollars > 0 && anySubPhaseBudgeted && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
 				phaseName := acc.summary.PhaseName
 				if acc.summary.PhaseNumber != nil {
 					phaseName = *acc.summary.PhaseNumber + " " + phaseName

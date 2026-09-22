@@ -161,6 +161,30 @@ func TestComputePhaseBudget_NoWarningWhenSubPhasesHaveNoBudget(t *testing.T) {
 	}
 }
 
+// A sub-phase budget of an explicit zero is still a budget. Reading the guard
+// off the sum instead of off the children would treat this as "nobody was
+// given a budget" and suppress a real mismatch.
+func TestComputePhaseBudget_WarnsWhenSubPhaseBudgetsAreExplicitZero(t *testing.T) {
+	phases := []Phase{
+		{MosaicID: 100, Name: "Design", PhaseNumber: strPtr("#01"), Total: strPtr("100000")},
+		{MosaicID: 201, Name: "Sub A", PhaseNumber: strPtr("01"), ParentID: intPtr(100), Total: strPtr("0")},
+		{MosaicID: 202, Name: "Sub B", PhaseNumber: strPtr("02"), ParentID: intPtr(100), Total: strPtr("0")},
+	}
+	today := time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)
+
+	report := ComputePhaseBudget(1, phases, nil, nil, map[int]float64{}, today)
+
+	var found bool
+	for _, w := range report.Warnings {
+		if strings.Contains(w, "sub-phase budgets sum to") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a sum warning, got %v", report.Warnings)
+	}
+}
+
 // One sub-phase carrying a budget means the money was meant to be split, so a
 // shortfall is still worth reporting.
 func TestComputePhaseBudget_WarnsWhenSomeSubPhasesHaveBudget(t *testing.T) {

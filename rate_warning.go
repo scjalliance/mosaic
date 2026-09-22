@@ -16,9 +16,11 @@ const (
 // The three bill-rate warnings, as functions rather than inline formatting.
 //
 // Going through here is what keeps RateWarning honest: the tests call these
-// and assert the predicate matches what comes out, so an edit that drops a
-// marker fails the suite instead of quietly making RateWarning return false
-// and putting every affected project back in the report.
+// and assert the predicate matches what comes out, so an edit that reworded a
+// builder and dropped a marker fails the suite instead of quietly making
+// RateWarning return false and putting every affected project back in the
+// report. Re-inlining a message at the call site would still escape that, so
+// new bill-rate warnings belong here rather than in resolveMemberRates.
 
 // rateLookupFallbackWarning reports a project-specific rate that could not be
 // read, where a global rate was available to stand in.
