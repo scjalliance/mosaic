@@ -1,18 +1,43 @@
 package mosaic
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Every bill-rate warning must be recognizable to a caller deciding what is
 // worth reporting. All three affect planned dollar amounts only and say
 // nothing about the project's budget figures.
-func TestRateWarningMatchesProducedText(t *testing.T) {
-	for _, w := range []string{
-		"Allison Zimmerman: could not look up project-specific rate, using fallback global rate instead",
-		"Cori McGovern: could not look up project-specific rate and no fallback rate exists, so planned dollar amounts for this person will be $0",
-		"Allison Zimmerman: no bill rate found, so planned dollar amounts for this person will be $0",
+//
+// The messages come from the builders the producers call, not from literals
+// copied here. An edit that drops a marker fails this test rather than quietly
+// making RateWarning return false and putting every affected project back in
+// the report.
+func TestRateWarningMatchesEveryBuilder(t *testing.T) {
+	for name, w := range map[string]string{
+		"lookup failed, fallback used": rateLookupFallbackWarning("Allison Zimmerman"),
+		"lookup failed, no fallback":   rateLookupNoFallbackWarning("Cori McGovern"),
+		"no rate configured":           noBillRateWarning("Allison Zimmerman"),
 	} {
-		if !RateWarning(w) {
-			t.Errorf("RateWarning(%q) = false, want true", w)
+		t.Run(name, func(t *testing.T) {
+			if !RateWarning(w) {
+				t.Errorf("RateWarning(%q) = false, want true", w)
+			}
+		})
+	}
+}
+
+// The member's name has to survive into the message, or a reader cannot tell
+// whose rate is missing.
+func TestRateWarningBuildersNameTheMember(t *testing.T) {
+	const member = "Allison Zimmerman"
+	for _, w := range []string{
+		rateLookupFallbackWarning(member),
+		rateLookupNoFallbackWarning(member),
+		noBillRateWarning(member),
+	} {
+		if !strings.HasPrefix(w, member+": ") {
+			t.Errorf("warning %q does not lead with the member name", w)
 		}
 	}
 }

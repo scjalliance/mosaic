@@ -292,7 +292,13 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 			// exact comparison reported "sum to $99096.14 but parent budget is
 			// $99096.14", which tells a reader nothing and buries the real
 			// mismatches.
-			if m.BudgetDollars > 0 && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
+			//
+			// Sub-phases that carry no budget at all are a different shape, not
+			// a discrepancy: the fee was entered on the parent and the work was
+			// broken out beneath it without splitting the money. Warning there
+			// would say "sum to $0.00 but parent budget is $100000.00" on every
+			// such project, with nothing behind it to act on.
+			if m.BudgetDollars > 0 && taskBudgetSum > 0 && math.Abs(taskBudgetSum-m.BudgetDollars) > budgetSumTolerance {
 				phaseName := acc.summary.PhaseName
 				if acc.summary.PhaseNumber != nil {
 					phaseName = *acc.summary.PhaseNumber + " " + phaseName
@@ -432,15 +438,11 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 		})
 		if err != nil {
 			slog.Warn("failed to fetch member project rates, using fallback", "member_id", mid, "error", err)
-			// Built from rateLookupWarningMarker so RateWarning keeps matching
-			// these if the wording is ever edited.
 			if fallback, ok := fallbackRates[mid]; ok {
-				warnings = append(warnings, fmt.Sprintf("%s: %s, using fallback global rate instead",
-					memberDisplayName(memberNames, mid), rateLookupWarningMarker))
+				warnings = append(warnings, rateLookupFallbackWarning(memberDisplayName(memberNames, mid)))
 				result[mid] = fallback
 			} else {
-				warnings = append(warnings, fmt.Sprintf("%s: %s and no fallback rate exists, so planned dollar amounts for this person will be $0",
-					memberDisplayName(memberNames, mid), rateLookupWarningMarker))
+				warnings = append(warnings, rateLookupNoFallbackWarning(memberDisplayName(memberNames, mid)))
 			}
 			continue
 		}
@@ -475,10 +477,7 @@ func (c *Client) resolveMemberRates(ctx context.Context, projectID int, memberID
 			result[mid] = fallback
 		} else {
 			slog.Warn("no rate found for member", "member_id", mid)
-			// Built from noBillRateWarningMarker so RateWarning keeps matching
-			// this if the wording is ever edited.
-			warnings = append(warnings, fmt.Sprintf("%s: %s, so planned dollar amounts for this person will be $0",
-				memberDisplayName(memberNames, mid), noBillRateWarningMarker))
+			warnings = append(warnings, noBillRateWarning(memberDisplayName(memberNames, mid)))
 		}
 	}
 
