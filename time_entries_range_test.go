@@ -69,7 +69,7 @@ func TestListProjectTimeEntriesByYear(t *testing.T) {
 }
 
 func TestListProjectTimeEntriesMonthFallback(t *testing.T) {
-	f := &fakeTimeEntries{dates: []string{"2024-01-15", "2024-07-04", "2024-12-31", "2025-05-05", "2025-11-20"}, maxEntries: 2}
+	f := &fakeTimeEntries{dates: []string{"2024-01-15", "2024-07-04", "2024-12-31", "2025-05-05", "2025-08-05", "2025-11-20"}, maxEntries: 2}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
 	c := NewClient("k", "team", WithBaseURL(srv.URL))
@@ -79,8 +79,8 @@ func TestListProjectTimeEntriesMonthFallback(t *testing.T) {
 	}
 	// 2025-11-20 is after now (2025-06-01) but in now's year: the monthly
 	// fallback still covers all twelve months.
-	if len(got) != 5 {
-		t.Fatalf("got %d entries, want 5 (via monthly fallback)", len(got))
+	if len(got) != 6 {
+		t.Fatalf("got %d entries, want 6 (via monthly fallback)", len(got))
 	}
 }
 
