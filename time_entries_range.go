@@ -9,9 +9,13 @@ import (
 	"time"
 )
 
-// TimeEntryFloorYear is the earliest year ListProjectTimeEntries searches for
-// a project's time. SCJ's oldest Mosaic time is from 2015.
-const TimeEntryFloorYear = 2000
+// timeEntryFloorYear is the earliest year ListProjectTimeEntries searches
+// for a project's time; early enough for any mistyped date.
+const timeEntryFloorYear = 1900
+
+// timeEntryCeiling ends the trailing range that catches entries dated after
+// the current year (pre-entered or mistyped).
+var timeEntryCeiling = time.Date(2099, 12, 31, 0, 0, 0, 0, time.UTC)
 
 // ListProjectTimeEntries returns every time entry of one project, fetched a
 // year at a time.
@@ -20,9 +24,9 @@ const TimeEntryFloorYear = 2000
 // request for a large project (about 338,000 entries for 1232011) takes
 // longer, so it fails with a 504. Mosaic asked us to send date ranges
 // instead (2026-11-06). This finds the project's first year with a few
-// one-entry requests, then fetches each year through now's. A year that
-// still times out is fetched month by month instead; a month that times out
-// is an error. A timed-out request is never repeated, since Mosaic keeps
+// one-entry requests, fetches each year through now's, then one range for
+// anything dated later. A year that still times out is fetched month by
+// month instead; a month that times out is an error. A timed-out request is never repeated, since Mosaic keeps
 // running it after it gives up.
 func (c *Client) ListProjectTimeEntries(ctx context.Context, projectID int, now time.Time) ([]TimeEntry, error) {
 	first, ok, err := c.firstTimeEntryYear(ctx, projectID, now.Year())
@@ -30,7 +34,7 @@ func (c *Client) ListProjectTimeEntries(ctx context.Context, projectID int, now 
 		return nil, err
 	}
 	if !ok {
-		return nil, nil
+		first = now.Year() + 1 // nothing through this year; still check later dates
 	}
 	var all []TimeEntry
 	for y := first; y <= now.Year(); y++ {
@@ -45,9 +49,6 @@ func (c *Client) ListProjectTimeEntries(ctx context.Context, projectID int, now 
 		}
 		for m := 0; m < 12; m++ {
 			ms := start.AddDate(0, m, 0)
-			if ms.After(now) {
-				break
-			}
 			entries, err := c.timeEntriesBetween(ctx, projectID, ms, ms.AddDate(0, 1, -1))
 			if err != nil {
 				return nil, fmt.Errorf("time entries for project %d in %s (after %d timed out): %w", projectID, ms.Format("2006-01"), y, err)
@@ -55,14 +56,20 @@ func (c *Client) ListProjectTimeEntries(ctx context.Context, projectID int, now 
 			all = append(all, entries...)
 		}
 	}
-	return all, nil
+	// Entries dated after this year: usually none, so this is quick.
+	next := time.Date(now.Year()+1, 1, 1, 0, 0, 0, 0, time.UTC)
+	later, err := c.timeEntriesBetween(ctx, projectID, next, timeEntryCeiling)
+	if err != nil {
+		return nil, fmt.Errorf("time entries for project %d dated after %d: %w", projectID, now.Year(), err)
+	}
+	return append(all, later...), nil
 }
 
-// firstTimeEntryYear finds the earliest year in [TimeEntryFloorYear, last]
+// firstTimeEntryYear finds the earliest year in [timeEntryFloorYear, last]
 // with a time entry for the project, by binary search over one-entry
-// requests. ok is false when the project has no time at all.
+// requests. ok is false when the project has no time through last.
 func (c *Client) firstTimeEntryYear(ctx context.Context, projectID, last int) (year int, ok bool, err error) {
-	floor := time.Date(TimeEntryFloorYear, 1, 1, 0, 0, 0, 0, time.UTC)
+	floor := time.Date(timeEntryFloorYear, 1, 1, 0, 0, 0, 0, time.UTC)
 	hasThrough := func(through int) (bool, error) {
 		end := time.Date(through, 12, 31, 0, 0, 0, 0, time.UTC)
 		entries, err := c.ListTimeEntries(ctx, TimeEntryFilter{
@@ -80,7 +87,7 @@ func (c *Client) firstTimeEntryYear(ctx context.Context, projectID, last int) (y
 	if err != nil || !has {
 		return 0, false, err
 	}
-	lo, hi := TimeEntryFloorYear, last
+	lo, hi := timeEntryFloorYear, last
 	for lo < hi {
 		mid := lo + (hi-lo)/2
 		has, err := hasThrough(mid)
