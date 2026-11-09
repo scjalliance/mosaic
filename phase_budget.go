@@ -350,11 +350,9 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	}
 	slog.Info("fetched phases", "count", len(phases))
 
-	allTrue := true
-	entries, err := c.ListTimeEntries(ctx, TimeEntryFilter{
-		ListParams: ListParams{All: &allTrue},
-		ProjectIDs: []int{projectID},
-	})
+	// A year at a time: one all=true request for a large project outruns
+	// Mosaic's 60-second limit (see ListProjectTimeEntries).
+	entries, err := c.ListProjectTimeEntries(ctx, projectID, time.Now())
 	if err != nil {
 		return nil, fmt.Errorf("fetching time entries: %w", err)
 	}
