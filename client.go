@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -48,7 +49,16 @@ func newDefaultHTTPClient() *http.Client {
 	if ok {
 		transport = transport.Clone()
 	} else {
-		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		// The same limits http.DefaultTransport ships with.
+		transport = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
 	}
 	transport.ResponseHeaderTimeout = defaultHeaderTimeout
 	return &http.Client{Transport: transport, Timeout: defaultTimeout}
