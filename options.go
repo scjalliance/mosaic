@@ -39,6 +39,14 @@ func WithRealmID(realmID string) Option {
 
 // WithHTTPClient sets a custom *http.Client for making API requests.
 // This is useful for configuring timeouts, transport settings, or testing.
+//
+// The default client is built from http.DefaultTransport. When that is an
+// *http.Transport (the usual case), the client waits up to 75 seconds for a
+// response's headers, a little longer than Mosaic's own 60-second limit,
+// unless the program set its own header timeout there. When a program has
+// replaced it with another RoundTripper, that RoundTripper is used as is and
+// only the 10-minute limit on a whole request applies; pass a client here to
+// add a header timeout.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = httpClient
