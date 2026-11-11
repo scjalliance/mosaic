@@ -10,10 +10,11 @@ import (
 // base (normally http.DefaultTransport), with defaultTimeout for a whole
 // request.
 //
-//   - A stock *http.Transport is cloned, so the program's own settings on the
-//     global stay its own, and the clone gets ResponseHeaderTimeout =
-//     defaultHeaderTimeout. That timer starts once the request is written, so
-//     a connect or TLS failure keeps its own error.
+//   - An *http.Transport is cloned, keeping the program's proxy, dial, and TLS
+//     settings without changing the shared global. If the program set no
+//     ResponseHeaderTimeout, the clone gets defaultHeaderTimeout; a value the
+//     program chose is kept. That timer starts once the request is written,
+//     so a connect or TLS failure keeps its own error.
 //   - Any other RoundTripper (an egress policy, proxy, or instrumentation a
 //     program installed) is used as is, so Mosaic requests and their bearer
 //     token still go through it. It gets only defaultTimeout; pass
@@ -30,7 +31,9 @@ func newDefaultHTTPClient(base http.RoundTripper) *http.Client {
 	default:
 		return &http.Client{Transport: base, Timeout: defaultTimeout}
 	}
-	t.ResponseHeaderTimeout = defaultHeaderTimeout
+	if t.ResponseHeaderTimeout == 0 {
+		t.ResponseHeaderTimeout = defaultHeaderTimeout
+	}
 	return &http.Client{Transport: t, Timeout: defaultTimeout}
 }
 

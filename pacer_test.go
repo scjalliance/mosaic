@@ -222,3 +222,41 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 // RoundTrip calls f.
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestNewClientInstallsHeaderTimeout checks what NewClient itself installs
+// from the stock http.DefaultTransport: a clone with the 75s header timeout
+// that keeps the global's proxy and dial settings.
+func TestNewClientInstallsHeaderTimeout(t *testing.T) {
+	stock, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Skipf("http.DefaultTransport is %T", http.DefaultTransport)
+	}
+	c := NewClient("k", "team")
+	tr, ok := c.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", c.httpClient.Transport)
+	}
+	if tr == stock {
+		t.Error("NewClient used the global transport itself, want a clone")
+	}
+	if tr.ResponseHeaderTimeout != 75*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want 75s", tr.ResponseHeaderTimeout)
+	}
+	if tr.Proxy == nil || tr.DialContext == nil {
+		t.Error("clone lost the global's Proxy or DialContext")
+	}
+}
+
+// TestDefaultHTTPClientKeepsProgramHeaderTimeout checks that a header
+// timeout the program set on its own transport is kept.
+func TestDefaultHTTPClientKeepsProgramHeaderTimeout(t *testing.T) {
+	base := stockTransport()
+	base.ResponseHeaderTimeout = 120 * time.Second
+	tr, ok := newDefaultHTTPClient(base).Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("want *http.Transport")
+	}
+	if tr.ResponseHeaderTimeout != 120*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want the program's 120s", tr.ResponseHeaderTimeout)
+	}
+}
