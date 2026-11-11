@@ -1,6 +1,9 @@
 package mosaic
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 // Option is a functional option for configuring a Client.
 type Option func(*Client)
@@ -39,5 +42,15 @@ func WithRealmID(realmID string) Option {
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = httpClient
+	}
+}
+
+// WithRequestInterval sets the least time between the starts of two requests
+// from this Client. The default is [DefaultRequestInterval], which keeps a
+// Client under Mosaic's rate limit. Zero or less turns spacing off; a 429
+// still holds back all requests.
+func WithRequestInterval(d time.Duration) Option {
+	return func(c *Client) {
+		c.pacer = &pacer{interval: max(d, 0)}
 	}
 }

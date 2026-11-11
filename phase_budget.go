@@ -29,6 +29,12 @@ type PhaseBudgetReport struct {
 	// Warnings contains human-readable warnings generated during report
 	// computation (e.g. missing rate data for members).
 	Warnings []string `json:"warnings,omitempty"`
+
+	// TimeEntries holds the time entries the report was computed from, so a
+	// caller that needs them too does not fetch them a second time.
+	// ComputePhaseBudget sets it to the entries it was given, and
+	// GetPhaseBudgetReport never leaves it nil. It is not serialized.
+	TimeEntries []TimeEntry `json:"-"`
 }
 
 // PhaseBudgetSummary contains budget metrics for a single phase.
@@ -233,8 +239,9 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 
 	// Compute remaining and percentages, build result.
 	report := &PhaseBudgetReport{
-		ProjectID: projectID,
-		Phases:    make([]PhaseBudgetSummary, 0, len(phaseOrder)),
+		ProjectID:   projectID,
+		Phases:      make([]PhaseBudgetSummary, 0, len(phaseOrder)),
+		TimeEntries: entries,
 	}
 
 	for _, pid := range phaseOrder {
@@ -393,6 +400,10 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	// sub-phase budgets that do not sum to their parent. Assigning here dropped
 	// those, so callers only ever saw rate warnings.
 	report.Warnings = append(report.Warnings, rateWarnings...)
+	// Never nil, so a caller can tell "no entries" from "not fetched".
+	if report.TimeEntries == nil {
+		report.TimeEntries = []TimeEntry{}
+	}
 	return report, nil
 }
 

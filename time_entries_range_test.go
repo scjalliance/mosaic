@@ -22,6 +22,8 @@ type fakeTimeEntries struct {
 	ranges     []string
 }
 
+// ServeHTTP answers one time entry request from f.dates and records the
+// requested range.
 func (f *fakeTimeEntries) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	start, _ := time.Parse(dateFormat, q.Get("start_date"))
@@ -48,11 +50,14 @@ func (f *fakeTimeEntries) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"time_entry": out})
 }
 
+// TestListProjectTimeEntriesByYear checks that every entry comes back,
+// including ones before 2000 and after this year, without ever requesting
+// the whole history in one all=true request.
 func TestListProjectTimeEntriesByYear(t *testing.T) {
 	f := &fakeTimeEntries{dates: []string{"1999-12-31", "2019-03-04", "2019-11-30", "2021-06-01", "2024-02-29", "2026-11-02", "2026-12-15", "2027-01-04"}}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	c := NewClient("k", "team", WithBaseURL(srv.URL))
+	c := NewClient("k", "team", WithBaseURL(srv.URL), WithRequestInterval(0))
 	got, err := c.ListProjectTimeEntries(context.Background(), 1, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -68,11 +73,13 @@ func TestListProjectTimeEntriesByYear(t *testing.T) {
 	}
 }
 
+// TestListProjectTimeEntriesMonthFallback checks that a year that times out
+// is fetched month by month and still returns every entry.
 func TestListProjectTimeEntriesMonthFallback(t *testing.T) {
 	f := &fakeTimeEntries{dates: []string{"2024-01-15", "2024-07-04", "2024-12-31", "2025-05-05", "2025-08-05", "2025-11-20"}, maxEntries: 2}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	c := NewClient("k", "team", WithBaseURL(srv.URL))
+	c := NewClient("k", "team", WithBaseURL(srv.URL), WithRequestInterval(0))
 	got, err := c.ListProjectTimeEntries(context.Background(), 1, time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -84,21 +91,25 @@ func TestListProjectTimeEntriesMonthFallback(t *testing.T) {
 	}
 }
 
+// TestListProjectTimeEntriesEmpty checks that a project with no time returns
+// no entries and no error.
 func TestListProjectTimeEntriesEmpty(t *testing.T) {
 	srv := httptest.NewServer(&fakeTimeEntries{})
 	defer srv.Close()
-	c := NewClient("k", "team", WithBaseURL(srv.URL))
+	c := NewClient("k", "team", WithBaseURL(srv.URL), WithRequestInterval(0))
 	got, err := c.ListProjectTimeEntries(context.Background(), 1, time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC))
 	if err != nil || len(got) != 0 {
 		t.Fatalf("got %d, %v", len(got), err)
 	}
 }
 
+// TestListProjectTimeEntriesMonthTimeoutIsAnError checks that a month that
+// still times out is returned as an error, not retried.
 func TestListProjectTimeEntriesMonthTimeoutIsAnError(t *testing.T) {
 	f := &fakeTimeEntries{dates: []string{"2025-05-05", "2025-05-06"}, maxEntries: 1}
 	srv := httptest.NewServer(f)
 	defer srv.Close()
-	c := NewClient("k", "team", WithBaseURL(srv.URL))
+	c := NewClient("k", "team", WithBaseURL(srv.URL), WithRequestInterval(0))
 	if _, err := c.ListProjectTimeEntries(context.Background(), 1, time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)); err == nil {
 		t.Fatal("want an error when a single month still times out")
 	}
