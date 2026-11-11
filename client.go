@@ -101,7 +101,9 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	for attempt := range maxRetries + 1 {
 		if err := c.pacer.wait(ctx); err != nil {
 			if lastRateLimit != nil {
-				return fmt.Errorf("%w while waiting out a rate limit: %w", err, lastRateLimit)
+				// %v, not %w: this is a context error, not a rate limit a caller
+				// should wait out and retry.
+				return fmt.Errorf("%w while waiting out a rate limit: %v", err, lastRateLimit)
 			}
 			return err
 		}
@@ -145,6 +147,10 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
+			if resp.StatusCode == http.StatusTooManyRequests {
+				// Still a 429: hold requests back even though the body is lost.
+				c.pacer.pause(parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()))
+			}
 			return fmt.Errorf("reading response body: %w", err)
 		}
 
