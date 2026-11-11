@@ -47,13 +47,9 @@ func WithHTTPClient(httpClient *http.Client) Option {
 
 // WithRequestInterval sets the least time between the starts of two requests
 // from this Client. The default is [DefaultRequestInterval], which keeps a
-// Client under Mosaic's rate limit. Zero or less turns spacing off.
+// Client under Mosaic's rate limit. Zero or less turns spacing off; a 429 still holds back all requests.
 func WithRequestInterval(d time.Duration) Option {
 	return func(c *Client) {
-		if d <= 0 {
-			c.pacer = nil
-			return
-		}
-		c.pacer = &pacer{interval: d}
+		c.pacer = &pacer{interval: max(d, 0)}
 	}
 }

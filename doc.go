@@ -31,9 +31,9 @@
 // The Mosaic API allows 500 requests per 5 minutes per API key. A Client
 // starts its requests at least [DefaultRequestInterval] apart to stay under
 // it; [WithRequestInterval] changes or disables that. On a 429 the Client
-// holds back all of its requests for the Retry-After time (60 seconds when
-// the header is missing) and retries up to 3 times, then returns a
-// [RateLimitError].
+// holds back all of its requests for the Retry-After time (2 minutes when
+// the header is missing or unreadable) and retries up to 3 times, then
+// returns a [RateLimitError].
 //
 // # Supported Resources
 //

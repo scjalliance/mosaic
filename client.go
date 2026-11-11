@@ -35,7 +35,7 @@ type Client struct {
 	tenant     string
 	realmID    string
 	httpClient *http.Client
-	pacer      *pacer // nil sends requests without spacing
+	pacer      *pacer // never nil; see WithRequestInterval
 }
 
 // NewClient creates a new Mosaic API client with the given API key and team ID.
@@ -70,8 +70,9 @@ func (c *Client) apiPath(dataType string, segments ...string) string {
 // maxRetries is the number of times to retry a request after a rate limit.
 const maxRetries = 3
 
-// minRetryDelay is the least delay before retrying after a 429 whose
-// Retry-After is under it. A 429 with no Retry-After waits rateLimitPause.
+// minRetryDelay is the least time a 429 holds back requests, even when
+// Retry-After is shorter. A 429 with no usable Retry-After waits
+// rateLimitPause.
 const minRetryDelay = 2 * time.Second
 
 // do executes an HTTP request against the Mosaic API, handling authentication
@@ -142,32 +143,21 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if resp.StatusCode >= 400 {
 			apiErr := c.handleErrorResponse(resp, respBody)
 
-			// Auto-retry on rate limit if we have attempts left.
+			// On a 429, hold back every request from this Client, then retry
+			// this one if it has attempts left. The pause applies to the last
+			// attempt too, so the next caller does not walk into the limit.
 			var rlErr *RateLimitError
-			if errors.As(apiErr, &rlErr) && attempt < maxRetries {
-				delay := rlErr.RetryAfter
-				switch {
-				case delay <= 0:
-					delay = rateLimitPause
-				case delay < minRetryDelay:
-					delay = minRetryDelay
-				}
-				slog.Warn("rate limited, retrying",
-					"attempt", attempt+1,
-					"max_retries", maxRetries,
-					"retry_after", delay,
-					"path", path,
-				)
-				if c.pacer != nil {
-					// The wait at the top of the loop sleeps out the pause.
-					c.pacer.pause(delay)
-					continue
-				}
-				select {
-				case <-time.After(delay):
-					continue
-				case <-ctx.Done():
-					return ctx.Err()
+			if errors.As(apiErr, &rlErr) {
+				delay := max(rlErr.RetryAfter, minRetryDelay)
+				c.pacer.pause(delay)
+				if attempt < maxRetries {
+					slog.Warn("rate limited, retrying",
+						"attempt", attempt+1,
+						"max_retries", maxRetries,
+						"retry_after", delay,
+						"path", path,
+					)
+					continue // the pacer wait at the top sleeps out the pause
 				}
 			}
 
@@ -212,12 +202,7 @@ func (c *Client) handleErrorResponse(resp *http.Response, body []byte) error {
 
 	// Handle rate limiting specially.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		rateLimitErr := &RateLimitError{Err: apiErr}
-		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
-			if seconds, err := strconv.Atoi(retryAfter); err == nil {
-				rateLimitErr.RetryAfter = time.Duration(seconds) * time.Second
-			}
-		}
+		rateLimitErr := &RateLimitError{Err: apiErr, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 		return rateLimitErr
 	}
 
@@ -276,4 +261,19 @@ func (c *Client) RawGet(ctx context.Context, path string, query url.Values, resu
 // ignore the response body.
 func (c *Client) RawPut(ctx context.Context, path string, body any, result any) error {
 	return c.do(ctx, http.MethodPut, path, nil, body, result)
+}
+
+// parseRetryAfter reads a Retry-After header value, either delay-seconds or
+// an HTTP date, as a duration from now. A missing or unreadable value gives
+// rateLimitPause, so a 429 always holds requests back for a real interval. A
+// date already past gives zero.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if seconds, err := strconv.Atoi(v); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(t.Sub(now), 0)
+	}
+	return rateLimitPause
 }

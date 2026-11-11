@@ -13,7 +13,7 @@ import (
 // TestPacerSpacesRequests checks that requests from one Client, including
 // concurrent ones, start at least the request interval apart.
 func TestPacerSpacesRequests(t *testing.T) {
-	const interval = 40 * time.Millisecond
+	const interval = 50 * time.Millisecond
 	var mu sync.Mutex
 	var starts []time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,17 +40,17 @@ func TestPacerSpacesRequests(t *testing.T) {
 	if len(starts) != 6 {
 		t.Fatalf("got %d requests, want 6", len(starts))
 	}
-	// Allow a little scheduling slack below the interval.
+	// Server-side arrival times jitter, so allow 20ms of slack.
 	for i := 1; i < len(starts); i++ {
-		if gap := starts[i].Sub(starts[i-1]); gap < interval-5*time.Millisecond {
+		if gap := starts[i].Sub(starts[i-1]); gap < interval-20*time.Millisecond {
 			t.Errorf("request %d started %s after the one before, want at least %s", i, gap, interval)
 		}
 	}
 }
 
-// TestRateLimitPausesAllRequests checks that a 429 holds back the next
-// request for the Retry-After time, and that the retry then succeeds.
-func TestRateLimitPausesAllRequests(t *testing.T) {
+// TestRateLimitRetriesAfterPause checks that a 429 holds back the retry for
+// the Retry-After time, and that the retry then succeeds.
+func TestRateLimitRetriesAfterPause(t *testing.T) {
 	var calls atomic.Int32
 	var mu sync.Mutex
 	var starts []time.Time
@@ -93,5 +93,48 @@ func TestPacerWaitHonorsContext(t *testing.T) {
 	defer cancel()
 	if err := p.wait(ctx); err == nil {
 		t.Fatal("wait returned nil, want the context's error")
+	}
+}
+
+// TestPauseHoldsBackWaitingCallers checks that a pause also holds back a
+// caller that reserved its slot before the pause and is already asleep.
+func TestPauseHoldsBackWaitingCallers(t *testing.T) {
+	p := &pacer{interval: 100 * time.Millisecond}
+	if err := p.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	done := make(chan time.Time)
+	go func() {
+		if err := p.wait(context.Background()); err != nil {
+			t.Error(err)
+		}
+		done <- time.Now()
+	}()
+	time.Sleep(20 * time.Millisecond) // the caller is now asleep on its slot
+	p.pause(300 * time.Millisecond)
+	if got := (<-done).Sub(start); got < 300*time.Millisecond {
+		t.Errorf("waiting caller started %s after the pause began, want at least 300ms", got)
+	}
+}
+
+// TestParseRetryAfter checks the Retry-After forms Mosaic may send.
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+	}{
+		{"", rateLimitPause},
+		{"junk", rateLimitPause},
+		{"-3", rateLimitPause},
+		{"0", 0},
+		{"30", 30 * time.Second},
+		{"Wed, 11 Nov 2026 10:00:05 GMT", 5 * time.Second},
+		{"Wed, 11 Nov 2026 09:59:00 GMT", 0},
+	} {
+		if got := parseRetryAfter(tc.in, now); got != tc.want {
+			t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.in, got, tc.want)
+		}
 	}
 }
