@@ -180,10 +180,32 @@ func TestDefaultHTTPClientTimeouts(t *testing.T) {
 	if !ok {
 		t.Fatalf("transport is %T, want *http.Transport", hc.Transport)
 	}
-	if tr.ResponseHeaderTimeout <= 60*time.Second {
-		t.Errorf("ResponseHeaderTimeout = %s, want more than Mosaic's 60s", tr.ResponseHeaderTimeout)
+	if tr.ResponseHeaderTimeout != 75*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want 75s (past Mosaic's 60s)", tr.ResponseHeaderTimeout)
 	}
-	if hc.Timeout < 5*time.Minute {
-		t.Errorf("Timeout = %s, want a backstop of several minutes", hc.Timeout)
+	if hc.Timeout != 10*time.Minute {
+		t.Errorf("Timeout = %s, want 10m", hc.Timeout)
 	}
 }
+
+// TestDefaultHTTPClientKeepsReplacedTransport checks that a RoundTripper a
+// program installed as http.DefaultTransport is used, not bypassed.
+func TestDefaultHTTPClientKeepsReplacedTransport(t *testing.T) {
+	orig := http.DefaultTransport
+	defer func() { http.DefaultTransport = orig }()
+	custom := roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, nil })
+	http.DefaultTransport = custom
+	hc := newDefaultHTTPClient()
+	if _, ok := hc.Transport.(roundTripFunc); !ok {
+		t.Errorf("transport is %T, want the installed RoundTripper", hc.Transport)
+	}
+	if hc.Timeout != 10*time.Minute {
+		t.Errorf("Timeout = %s, want 10m", hc.Timeout)
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip calls f.
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

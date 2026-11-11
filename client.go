@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -40,26 +39,20 @@ const (
 	defaultTimeout = 10 * time.Minute
 )
 
-// newDefaultHTTPClient returns the http.Client NewClient uses: the default
-// transport with defaultHeaderTimeout, and defaultTimeout overall.
+// newDefaultHTTPClient returns the http.Client NewClient uses: a clone of
+// http.DefaultTransport with defaultHeaderTimeout, and defaultTimeout overall.
+//
+// If a program replaced http.DefaultTransport with another RoundTripper (an
+// egress policy, a proxy, instrumentation), that RoundTripper is used as is,
+// so Mosaic requests and their bearer token still go through it. It cannot
+// take a header timeout, so only defaultTimeout applies; pass WithHTTPClient
+// for anything else.
 func newDefaultHTTPClient() *http.Client {
-	// Clone the default transport for its proxy and dial settings, unless
-	// something replaced it with another RoundTripper.
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if ok {
-		transport = transport.Clone()
-	} else {
-		// The same limits http.DefaultTransport ships with.
-		transport = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		}
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok || base == nil {
+		return &http.Client{Transport: http.DefaultTransport, Timeout: defaultTimeout}
 	}
+	transport := base.Clone()
 	transport.ResponseHeaderTimeout = defaultHeaderTimeout
 	return &http.Client{Transport: transport, Timeout: defaultTimeout}
 }
