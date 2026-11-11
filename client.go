@@ -24,6 +24,12 @@ const (
 
 	// defaultRealmID is the default x-realm-id header value.
 	defaultRealmID = "prod"
+
+	// defaultTimeout bounds one request. Mosaic gives up on a request after
+	// 60 seconds and answers 504, so this is a little longer: Mosaic's own
+	// 504 ends a slow request, not us. A shorter timeout dropped requests
+	// Mosaic was still running, then sent more for the same data.
+	defaultTimeout = 75 * time.Second
 )
 
 // Client is an API client for the Mosaic time management platform.
@@ -48,7 +54,7 @@ func NewClient(apiKey, teamID string, opts ...Option) *Client {
 		tenant:  defaultTenant,
 		realmID: defaultRealmID,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultTimeout,
 		},
 		pacer: &pacer{interval: DefaultRequestInterval},
 	}

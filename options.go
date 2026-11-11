@@ -38,7 +38,9 @@ func WithRealmID(realmID string) Option {
 }
 
 // WithHTTPClient sets a custom *http.Client for making API requests.
-// This is useful for configuring timeouts, transport settings, or testing.
+// This is useful for configuring timeouts, transport settings, or testing. The
+// default client times out a request after 75 seconds, a little longer than
+// Mosaic's own 60-second limit.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = httpClient
