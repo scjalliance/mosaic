@@ -2,9 +2,6 @@ package mosaic
 
 import (
 	"context"
-	"errors"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -175,75 +172,48 @@ func TestPauseWakesLaterSlots(t *testing.T) {
 	}
 }
 
-// TestDefaultHTTPClientTimeouts checks the default limits: 75s for headers,
-// past Mosaic's 60s, and 10 minutes for a whole request.
+// TestDefaultHTTPClientTimeouts checks the default limits on a clone of the
+// stock transport: 75s for headers, past Mosaic's 60s, and 10 minutes for a
+// whole request. The global transport itself is left alone.
 func TestDefaultHTTPClientTimeouts(t *testing.T) {
-	hc := newDefaultHTTPClient(http.DefaultTransport)
-	ht, ok := hc.Transport.(*headerTimeoutTransport)
+	base := stockTransport()
+	hc := newDefaultHTTPClient(base)
+	tr, ok := hc.Transport.(*http.Transport)
 	if !ok {
-		t.Fatalf("transport is %T, want *headerTimeoutTransport", hc.Transport)
+		t.Fatalf("transport is %T, want *http.Transport", hc.Transport)
 	}
-	if ht.timeout != 75*time.Second {
-		t.Errorf("header timeout = %s, want 75s", ht.timeout)
+	if tr == base {
+		t.Error("transport is the base itself, want a clone")
+	}
+	if tr.ResponseHeaderTimeout != 75*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want 75s", tr.ResponseHeaderTimeout)
+	}
+	if base.ResponseHeaderTimeout != 0 {
+		t.Errorf("base ResponseHeaderTimeout changed to %s", base.ResponseHeaderTimeout)
 	}
 	if hc.Timeout != 10*time.Minute {
 		t.Errorf("Timeout = %s, want 10m", hc.Timeout)
 	}
-	if ht.base != http.DefaultTransport {
-		t.Errorf("base = %T, want http.DefaultTransport", ht.base)
-	}
 }
 
 // TestDefaultHTTPClientKeepsCustomTransport checks that a RoundTripper a
-// program installed is wrapped, not bypassed, and that nil or typed-nil gets
-// a working transport.
+// program installed is used, not bypassed, and that nil or a nil
+// *http.Transport gets a working transport with the header timeout.
 func TestDefaultHTTPClientKeepsCustomTransport(t *testing.T) {
 	custom := roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, nil })
-	if ht := newDefaultHTTPClient(custom).Transport.(*headerTimeoutTransport); ht.base == nil {
-		t.Error("custom transport was dropped")
-	} else if _, ok := ht.base.(roundTripFunc); !ok {
-		t.Errorf("base = %T, want the custom RoundTripper", ht.base)
+	if _, ok := newDefaultHTTPClient(custom).Transport.(roundTripFunc); !ok {
+		t.Error("custom RoundTripper was not used")
 	}
 	var typedNil *http.Transport
 	for _, base := range []http.RoundTripper{nil, typedNil} {
-		ht := newDefaultHTTPClient(base).Transport.(*headerTimeoutTransport)
-		if tr, ok := ht.base.(*http.Transport); !ok || tr == nil {
-			t.Errorf("base for %#v = %#v, want a new *http.Transport", base, ht.base)
+		tr, ok := newDefaultHTTPClient(base).Transport.(*http.Transport)
+		if !ok || tr == nil {
+			t.Errorf("base %#v: transport %#v, want a new *http.Transport", base, tr)
+			continue
 		}
-	}
-}
-
-// TestHeaderTimeoutTransport checks that slow headers fail with a timeout
-// net.Error, and that a slow body after prompt headers is read in full.
-func TestHeaderTimeoutTransport(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/slow-headers" {
-			time.Sleep(200 * time.Millisecond)
+		if tr.ResponseHeaderTimeout != 75*time.Second {
+			t.Errorf("base %#v: ResponseHeaderTimeout = %s, want 75s", base, tr.ResponseHeaderTimeout)
 		}
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
-		if r.URL.Path == "/slow-body" {
-			time.Sleep(200 * time.Millisecond)
-		}
-		w.Write([]byte("done"))
-	}))
-	defer srv.Close()
-	hc := &http.Client{Transport: &headerTimeoutTransport{base: http.DefaultTransport, timeout: 50 * time.Millisecond}}
-
-	_, err := hc.Get(srv.URL + "/slow-headers")
-	var netErr net.Error
-	if !errors.As(err, &netErr) || !netErr.Timeout() {
-		t.Errorf("slow headers: err = %v, want a timeout net.Error", err)
-	}
-
-	resp, err := hc.Get(srv.URL + "/slow-body")
-	if err != nil {
-		t.Fatalf("slow body: %v", err)
-	}
-	body, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if err != nil || string(body) != "done" {
-		t.Errorf("slow body: read %q, %v; want \"done\"", body, err)
 	}
 }
 
