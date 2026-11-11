@@ -75,6 +75,10 @@ const maxRetries = 3
 // rateLimitPause.
 const minRetryDelay = 2 * time.Second
 
+// maxRetryAfter caps the pause a single 429 can ask for. Mosaic's window is
+// 5 minutes, so a longer wait is never needed.
+const maxRetryAfter = 10 * time.Minute
+
 // do executes an HTTP request against the Mosaic API, handling authentication
 // headers, JSON encoding/decoding, error mapping, and automatic retry on rate
 // limit (429) responses.
@@ -266,14 +270,18 @@ func (c *Client) RawPut(ctx context.Context, path string, body any, result any) 
 // parseRetryAfter reads a Retry-After header value, either delay-seconds or
 // an HTTP date, as a duration from now. A missing or unreadable value gives
 // rateLimitPause, so a 429 always holds requests back for a real interval. A
-// date already past gives zero.
+// date already past gives zero. Anything longer than maxRetryAfter is cut to
+// it, so one odd header cannot stall the Client for hours.
 func parseRetryAfter(v string, now time.Time) time.Duration {
 	v = strings.TrimSpace(v)
-	if seconds, err := strconv.Atoi(v); err == nil && seconds >= 0 {
+	if seconds, err := strconv.ParseInt(v, 10, 64); err == nil && seconds >= 0 {
+		if seconds > int64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
+		}
 		return time.Duration(seconds) * time.Second
 	}
 	if t, err := http.ParseTime(v); err == nil {
-		return max(t.Sub(now), 0)
+		return min(max(t.Sub(now), 0), maxRetryAfter)
 	}
 	return rateLimitPause
 }

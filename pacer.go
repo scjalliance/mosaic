@@ -29,56 +29,51 @@ type pacer struct {
 	interval    time.Duration
 	next        time.Time // earliest start time for the next reserved slot
 	pausedUntil time.Time // no request starts before this
+	pauses      uint64    // counts pauses, so a sleeping caller sees a new one
 }
 
 // wait blocks until the caller's turn to send a request, or until ctx ends.
 // Each call reserves its own slot, so concurrent callers queue in order. A
-// caller already asleep when pause is called checks again on waking and
+// pause drops every reserved slot, so a caller that was asleep when it began
 // takes a new slot after the pause.
 func (p *pacer) wait(ctx context.Context) error {
 	for {
 		p.mu.Lock()
-		now := time.Now()
-		if now.Before(p.pausedUntil) {
-			// Paused: reserve a slot after the pause, then check again.
-			at := p.pausedUntil
-			if at.Before(p.next) {
-				at = p.next
-			}
-			p.next = at.Add(p.interval)
-			p.mu.Unlock()
-			if err := sleepCtx(ctx, time.Until(at)); err != nil {
-				return err
-			}
-			continue
+		at := time.Now()
+		if at.Before(p.next) {
+			at = p.next
 		}
-		at := p.next
-		if at.Before(now) {
-			at = now
+		if at.Before(p.pausedUntil) {
+			at = p.pausedUntil
 		}
 		p.next = at.Add(p.interval)
+		seen := p.pauses
 		p.mu.Unlock()
 
 		if err := sleepCtx(ctx, time.Until(at)); err != nil {
 			return err
 		}
 		p.mu.Lock()
-		paused := time.Now().Before(p.pausedUntil)
+		paused := p.pauses != seen
 		p.mu.Unlock()
 		if !paused {
 			return nil
 		}
-		// A 429 arrived while this caller slept; go around for a later slot.
+		// A 429 arrived while this caller slept; take a slot after the pause.
 	}
 }
 
 // pause holds back every request that has not started yet, including callers
-// already waiting, until at least d from now. It never shortens a pause.
+// already waiting, until at least d from now. It drops all reserved slots, so
+// waiting callers queue again from the end of the pause. It never shortens a
+// pause.
 func (p *pacer) pause(d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if until := time.Now().Add(d); p.pausedUntil.Before(until) {
 		p.pausedUntil = until
+		p.next = until
+		p.pauses++
 	}
 }
 

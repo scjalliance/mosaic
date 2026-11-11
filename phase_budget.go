@@ -32,7 +32,7 @@ type PhaseBudgetReport struct {
 
 	// TimeEntries holds the time entries the report was computed from, so a
 	// caller that needs them too does not fetch them a second time. Only
-	// GetPhaseBudgetReport sets it; it is not serialized.
+	// GetPhaseBudgetReport sets it, never to nil; it is not serialized.
 	TimeEntries []TimeEntry `json:"-"`
 }
 
@@ -398,7 +398,11 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	// sub-phase budgets that do not sum to their parent. Assigning here dropped
 	// those, so callers only ever saw rate warnings.
 	report.Warnings = append(report.Warnings, rateWarnings...)
+	// Never nil, so a caller can tell "no entries" from "not fetched".
 	report.TimeEntries = entries
+	if report.TimeEntries == nil {
+		report.TimeEntries = []TimeEntry{}
+	}
 	return report, nil
 }
 

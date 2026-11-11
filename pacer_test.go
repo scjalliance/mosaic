@@ -113,8 +113,11 @@ func TestPauseHoldsBackWaitingCallers(t *testing.T) {
 	}()
 	time.Sleep(20 * time.Millisecond) // the caller is now asleep on its slot
 	p.pause(300 * time.Millisecond)
-	if got := (<-done).Sub(start); got < 300*time.Millisecond {
-		t.Errorf("waiting caller started %s after the pause began, want at least 300ms", got)
+	// The pause began about 20ms in and lasts 300ms. The caller should start
+	// as soon as it ends, not an interval later.
+	got := (<-done).Sub(start)
+	if got < 300*time.Millisecond || got > 380*time.Millisecond {
+		t.Errorf("waiting caller started %s after start, want about 320ms", got)
 	}
 }
 
@@ -132,6 +135,9 @@ func TestParseRetryAfter(t *testing.T) {
 		{"30", 30 * time.Second},
 		{"Wed, 11 Nov 2026 10:00:05 GMT", 5 * time.Second},
 		{"Wed, 11 Nov 2026 09:59:00 GMT", 0},
+		{"86400", maxRetryAfter},
+		{"99999999999999999", maxRetryAfter},
+		{"Thu, 12 Nov 2026 10:00:00 GMT", maxRetryAfter},
 	} {
 		if got := parseRetryAfter(tc.in, now); got != tc.want {
 			t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.in, got, tc.want)
