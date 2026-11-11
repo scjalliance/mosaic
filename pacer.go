@@ -33,9 +33,9 @@ type pacer struct {
 }
 
 // wait blocks until the caller's turn to send a request, or until ctx ends.
-// Each call reserves its own slot, so concurrent callers queue in order. A
-// pause wakes every sleeping caller at once, and each takes a new slot
-// counted from the end of the pause.
+// Each call reserves its own slot, so concurrent callers queue in the order
+// they arrive. A pause wakes every sleeping caller at once, and each takes a
+// new slot counted from the end of the pause, in the order they wake.
 func (p *pacer) wait(ctx context.Context) error {
 	for {
 		p.mu.Lock()

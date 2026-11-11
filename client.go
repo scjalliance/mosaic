@@ -72,7 +72,7 @@ const maxRetries = 3
 
 // minRetryDelay is the least time a 429 holds back requests, even when
 // Retry-After is shorter. A 429 with no usable Retry-After waits
-// rateLimitPause.
+// rateLimitPause. See parseRetryAfter.
 const minRetryDelay = 2 * time.Second
 
 // maxRetryAfter caps the pause a single 429 can ask for. Mosaic's window is
@@ -97,8 +97,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 	}
 
+	var lastRateLimit *RateLimitError // kept so a timeout during its pause says why
 	for attempt := range maxRetries + 1 {
 		if err := c.pacer.wait(ctx); err != nil {
+			if lastRateLimit != nil {
+				return fmt.Errorf("%w while waiting out a rate limit: %w", err, lastRateLimit)
+			}
 			return err
 		}
 
@@ -152,7 +156,8 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			// attempt too, so the next caller does not walk into the limit.
 			var rlErr *RateLimitError
 			if errors.As(apiErr, &rlErr) {
-				delay := max(rlErr.RetryAfter, minRetryDelay)
+				lastRateLimit = rlErr
+				delay := rlErr.RetryAfter // already within its bounds
 				c.pacer.pause(delay)
 				if attempt < maxRetries {
 					slog.Warn("rate limited, retrying",
@@ -206,7 +211,14 @@ func (c *Client) handleErrorResponse(resp *http.Response, body []byte) error {
 
 	// Handle rate limiting specially.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		rateLimitErr := &RateLimitError{Err: apiErr, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		// Measure an HTTP-date Retry-After against the server's own clock
+		// (its Date header) when it sent one, so local clock skew does not
+		// shorten the pause.
+		now := time.Now()
+		if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+			now = d
+		}
+		rateLimitErr := &RateLimitError{Err: apiErr, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), now)}
 		return rateLimitErr
 	}
 
@@ -268,11 +280,17 @@ func (c *Client) RawPut(ctx context.Context, path string, body any, result any) 
 }
 
 // parseRetryAfter reads a Retry-After header value, either delay-seconds or
-// an HTTP date, as a duration from now. A missing or unreadable value gives
-// rateLimitPause, so a 429 always holds requests back for a real interval. A
-// date already past gives zero. Anything longer than maxRetryAfter is cut to
-// it, so one odd header cannot stall the Client for hours.
+// an HTTP date measured from now, as the pause a 429 asks for. A missing or
+// unreadable value gives rateLimitPause. The result is kept between
+// minRetryDelay and maxRetryAfter, so a 429 always holds requests back for a
+// real interval and one odd header cannot stall the Client for hours.
 func parseRetryAfter(v string, now time.Time) time.Duration {
+	return min(max(rawRetryAfter(v, now), minRetryDelay), maxRetryAfter)
+}
+
+// rawRetryAfter is parseRetryAfter before the bounds are applied, except that
+// it caps values too large to hold in a time.Duration.
+func rawRetryAfter(v string, now time.Time) time.Duration {
 	v = strings.TrimSpace(v)
 	seconds, err := strconv.ParseInt(v, 10, 64)
 	if errors.Is(err, strconv.ErrRange) && seconds > 0 {

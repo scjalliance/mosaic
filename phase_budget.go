@@ -31,8 +31,9 @@ type PhaseBudgetReport struct {
 	Warnings []string `json:"warnings,omitempty"`
 
 	// TimeEntries holds the time entries the report was computed from, so a
-	// caller that needs them too does not fetch them a second time. Only
-	// GetPhaseBudgetReport sets it, never to nil; it is not serialized.
+	// caller that needs them too does not fetch them a second time.
+	// ComputePhaseBudget sets it to the entries it was given, and
+	// GetPhaseBudgetReport never leaves it nil. It is not serialized.
 	TimeEntries []TimeEntry `json:"-"`
 }
 
@@ -238,8 +239,9 @@ func ComputePhaseBudget(projectID int, phases []Phase, entries []TimeEntry, plan
 
 	// Compute remaining and percentages, build result.
 	report := &PhaseBudgetReport{
-		ProjectID: projectID,
-		Phases:    make([]PhaseBudgetSummary, 0, len(phaseOrder)),
+		ProjectID:   projectID,
+		Phases:      make([]PhaseBudgetSummary, 0, len(phaseOrder)),
+		TimeEntries: entries,
 	}
 
 	for _, pid := range phaseOrder {
@@ -399,7 +401,6 @@ func (c *Client) GetPhaseBudgetReport(ctx context.Context, projectID int) (*Phas
 	// those, so callers only ever saw rate warnings.
 	report.Warnings = append(report.Warnings, rateWarnings...)
 	// Never nil, so a caller can tell "no entries" from "not fetched".
-	report.TimeEntries = entries
 	if report.TimeEntries == nil {
 		report.TimeEntries = []TimeEntry{}
 	}
