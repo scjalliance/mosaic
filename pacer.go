@@ -60,7 +60,14 @@ func (p *pacer) wait(ctx context.Context) error {
 		t := time.NewTimer(d)
 		select {
 		case <-t.C:
-			return nil
+			// A pause can begin between the timer firing and this check;
+			// if one is in force, queue again from its end.
+			p.mu.Lock()
+			paused := time.Now().Before(p.pausedUntil)
+			p.mu.Unlock()
+			if !paused {
+				return nil
+			}
 		case <-wake:
 			t.Stop() // a pause began; queue again from its end
 		case <-ctx.Done():
