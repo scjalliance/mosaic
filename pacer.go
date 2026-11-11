@@ -27,15 +27,15 @@ const rateLimitPause = 2 * time.Minute
 type pacer struct {
 	mu          sync.Mutex
 	interval    time.Duration
-	next        time.Time // earliest start time for the next reserved slot
-	pausedUntil time.Time // no request starts before this
-	pauses      uint64    // counts pauses, so a sleeping caller sees a new one
+	next        time.Time     // earliest start time for the next reserved slot
+	pausedUntil time.Time     // no request starts before this
+	wake        chan struct{} // closed by pause to wake every sleeping caller
 }
 
 // wait blocks until the caller's turn to send a request, or until ctx ends.
 // Each call reserves its own slot, so concurrent callers queue in order. A
-// pause drops every reserved slot, so a caller that was asleep when it began
-// takes a new slot after the pause.
+// pause wakes every sleeping caller at once, and each takes a new slot
+// counted from the end of the pause.
 func (p *pacer) wait(ctx context.Context) error {
 	for {
 		p.mu.Lock()
@@ -47,47 +47,44 @@ func (p *pacer) wait(ctx context.Context) error {
 			at = p.pausedUntil
 		}
 		p.next = at.Add(p.interval)
-		seen := p.pauses
+		if p.wake == nil {
+			p.wake = make(chan struct{})
+		}
+		wake := p.wake
 		p.mu.Unlock()
 
-		if err := sleepCtx(ctx, time.Until(at)); err != nil {
-			return err
+		d := time.Until(at)
+		if d <= 0 {
+			return ctx.Err()
 		}
-		p.mu.Lock()
-		paused := p.pauses != seen
-		p.mu.Unlock()
-		if !paused {
+		t := time.NewTimer(d)
+		select {
+		case <-t.C:
 			return nil
+		case <-wake:
+			t.Stop() // a pause began; queue again from its end
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
 		}
-		// A 429 arrived while this caller slept; take a slot after the pause.
 	}
 }
 
 // pause holds back every request that has not started yet, including callers
-// already waiting, until at least d from now. It drops all reserved slots, so
-// waiting callers queue again from the end of the pause. It never shortens a
-// pause.
+// already waiting, until at least d from now. It drops all reserved slots and
+// wakes the waiting callers so they queue again from the end of the pause. It
+// never shortens a pause.
 func (p *pacer) pause(d time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if until := time.Now().Add(d); p.pausedUntil.Before(until) {
-		p.pausedUntil = until
-		p.next = until
-		p.pauses++
+	until := time.Now().Add(d)
+	if !p.pausedUntil.Before(until) {
+		return
 	}
-}
-
-// sleepCtx sleeps for d, returning early with ctx's error if ctx ends first.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return ctx.Err()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	p.pausedUntil = until
+	p.next = until
+	if p.wake != nil {
+		close(p.wake)
+		p.wake = nil
 	}
 }

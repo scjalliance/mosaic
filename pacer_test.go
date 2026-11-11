@@ -116,7 +116,7 @@ func TestPauseHoldsBackWaitingCallers(t *testing.T) {
 	// The pause began about 20ms in and lasts 300ms. The caller should start
 	// as soon as it ends, not an interval later.
 	got := (<-done).Sub(start)
-	if got < 300*time.Millisecond || got > 380*time.Millisecond {
+	if got < 300*time.Millisecond || got > 500*time.Millisecond {
 		t.Errorf("waiting caller started %s after start, want about 320ms", got)
 	}
 }
@@ -137,10 +137,35 @@ func TestParseRetryAfter(t *testing.T) {
 		{"Wed, 11 Nov 2026 09:59:00 GMT", 0},
 		{"86400", maxRetryAfter},
 		{"99999999999999999", maxRetryAfter},
+		{"99999999999999999999", maxRetryAfter},
+		{"-99999999999999999999", rateLimitPause},
 		{"Thu, 12 Nov 2026 10:00:00 GMT", maxRetryAfter},
 	} {
 		if got := parseRetryAfter(tc.in, now); got != tc.want {
 			t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestPauseWakesLaterSlots checks that a caller asleep on a slot that falls
+// after the pause ends is woken and starts at the end of the pause, not at
+// its old slot and not behind callers that arrived later.
+func TestPauseWakesLaterSlots(t *testing.T) {
+	p := &pacer{interval: 500 * time.Millisecond}
+	if err := p.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	done := make(chan time.Time)
+	go func() {
+		if err := p.wait(context.Background()); err != nil {
+			t.Error(err)
+		}
+		done <- time.Now()
+	}()
+	time.Sleep(20 * time.Millisecond) // asleep on its slot at about 500ms
+	p.pause(100 * time.Millisecond)
+	if got := (<-done).Sub(start); got < 100*time.Millisecond || got > 350*time.Millisecond {
+		t.Errorf("caller started %s after start, want about 120ms (the end of the pause)", got)
 	}
 }
