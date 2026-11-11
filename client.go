@@ -39,24 +39,6 @@ const (
 	defaultTimeout = 10 * time.Minute
 )
 
-// newDefaultHTTPClient returns the http.Client NewClient uses: a clone of
-// http.DefaultTransport with defaultHeaderTimeout, and defaultTimeout overall.
-//
-// If a program replaced http.DefaultTransport with another RoundTripper (an
-// egress policy, a proxy, instrumentation), that RoundTripper is used as is,
-// so Mosaic requests and their bearer token still go through it. It cannot
-// take a header timeout, so only defaultTimeout applies; pass WithHTTPClient
-// for anything else.
-func newDefaultHTTPClient() *http.Client {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok || base == nil {
-		return &http.Client{Transport: http.DefaultTransport, Timeout: defaultTimeout}
-	}
-	transport := base.Clone()
-	transport.ResponseHeaderTimeout = defaultHeaderTimeout
-	return &http.Client{Transport: transport, Timeout: defaultTimeout}
-}
-
 // Client is an API client for the Mosaic time management platform.
 type Client struct {
 	baseURL    string
@@ -78,7 +60,7 @@ func NewClient(apiKey, teamID string, opts ...Option) *Client {
 		teamID:     teamID,
 		tenant:     defaultTenant,
 		realmID:    defaultRealmID,
-		httpClient: newDefaultHTTPClient(),
+		httpClient: newDefaultHTTPClient(http.DefaultTransport),
 		pacer:      &pacer{interval: DefaultRequestInterval},
 	}
 	for _, opt := range opts {

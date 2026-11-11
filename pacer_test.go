@@ -2,6 +2,9 @@ package mosaic
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -172,35 +175,75 @@ func TestPauseWakesLaterSlots(t *testing.T) {
 	}
 }
 
-// TestDefaultHTTPClientTimeouts checks that the default client waits longer
-// than Mosaic's 60-second limit for headers, and does not cut off a slow body.
+// TestDefaultHTTPClientTimeouts checks the default limits: 75s for headers,
+// past Mosaic's 60s, and 10 minutes for a whole request.
 func TestDefaultHTTPClientTimeouts(t *testing.T) {
-	hc := newDefaultHTTPClient()
-	tr, ok := hc.Transport.(*http.Transport)
+	hc := newDefaultHTTPClient(http.DefaultTransport)
+	ht, ok := hc.Transport.(*headerTimeoutTransport)
 	if !ok {
-		t.Fatalf("transport is %T, want *http.Transport", hc.Transport)
+		t.Fatalf("transport is %T, want *headerTimeoutTransport", hc.Transport)
 	}
-	if tr.ResponseHeaderTimeout != 75*time.Second {
-		t.Errorf("ResponseHeaderTimeout = %s, want 75s (past Mosaic's 60s)", tr.ResponseHeaderTimeout)
+	if ht.timeout != 75*time.Second {
+		t.Errorf("header timeout = %s, want 75s", ht.timeout)
 	}
 	if hc.Timeout != 10*time.Minute {
 		t.Errorf("Timeout = %s, want 10m", hc.Timeout)
+	}
+	if ht.base != http.DefaultTransport {
+		t.Errorf("base = %T, want http.DefaultTransport", ht.base)
 	}
 }
 
-// TestDefaultHTTPClientKeepsReplacedTransport checks that a RoundTripper a
-// program installed as http.DefaultTransport is used, not bypassed.
-func TestDefaultHTTPClientKeepsReplacedTransport(t *testing.T) {
-	orig := http.DefaultTransport
-	defer func() { http.DefaultTransport = orig }()
+// TestDefaultHTTPClientKeepsCustomTransport checks that a RoundTripper a
+// program installed is wrapped, not bypassed, and that nil or typed-nil gets
+// a working transport.
+func TestDefaultHTTPClientKeepsCustomTransport(t *testing.T) {
 	custom := roundTripFunc(func(r *http.Request) (*http.Response, error) { return nil, nil })
-	http.DefaultTransport = custom
-	hc := newDefaultHTTPClient()
-	if _, ok := hc.Transport.(roundTripFunc); !ok {
-		t.Errorf("transport is %T, want the installed RoundTripper", hc.Transport)
+	if ht := newDefaultHTTPClient(custom).Transport.(*headerTimeoutTransport); ht.base == nil {
+		t.Error("custom transport was dropped")
+	} else if _, ok := ht.base.(roundTripFunc); !ok {
+		t.Errorf("base = %T, want the custom RoundTripper", ht.base)
 	}
-	if hc.Timeout != 10*time.Minute {
-		t.Errorf("Timeout = %s, want 10m", hc.Timeout)
+	var typedNil *http.Transport
+	for _, base := range []http.RoundTripper{nil, typedNil} {
+		ht := newDefaultHTTPClient(base).Transport.(*headerTimeoutTransport)
+		if tr, ok := ht.base.(*http.Transport); !ok || tr == nil {
+			t.Errorf("base for %#v = %#v, want a new *http.Transport", base, ht.base)
+		}
+	}
+}
+
+// TestHeaderTimeoutTransport checks that slow headers fail with a timeout
+// net.Error, and that a slow body after prompt headers is read in full.
+func TestHeaderTimeoutTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow-headers" {
+			time.Sleep(200 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		if r.URL.Path == "/slow-body" {
+			time.Sleep(200 * time.Millisecond)
+		}
+		w.Write([]byte("done"))
+	}))
+	defer srv.Close()
+	hc := &http.Client{Transport: &headerTimeoutTransport{base: http.DefaultTransport, timeout: 50 * time.Millisecond}}
+
+	_, err := hc.Get(srv.URL + "/slow-headers")
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("slow headers: err = %v, want a timeout net.Error", err)
+	}
+
+	resp, err := hc.Get(srv.URL + "/slow-body")
+	if err != nil {
+		t.Fatalf("slow body: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil || string(body) != "done" {
+		t.Errorf("slow body: read %q, %v; want \"done\"", body, err)
 	}
 }
 
