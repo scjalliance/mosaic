@@ -60,12 +60,18 @@ func (p *pacer) wait(ctx context.Context) error {
 		t := time.NewTimer(d)
 		select {
 		case <-t.C:
-			// A pause can begin between the timer firing and this check;
-			// if one is in force, queue again from its end.
+			// The slot is stale if a pause began after it was reserved (wake
+			// closed; select may pick the timer even when both are ready) or
+			// one is in force now. Then queue again from the pause's end.
 			p.mu.Lock()
-			paused := time.Now().Before(p.pausedUntil)
+			stale := time.Now().Before(p.pausedUntil)
+			select {
+			case <-wake:
+				stale = true
+			default:
+			}
 			p.mu.Unlock()
-			if !paused {
+			if !stale {
 				return nil
 			}
 		case <-wake:
