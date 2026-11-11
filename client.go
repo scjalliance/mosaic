@@ -25,12 +25,27 @@ const (
 	// defaultRealmID is the default x-realm-id header value.
 	defaultRealmID = "prod"
 
-	// defaultTimeout bounds one request. Mosaic gives up on a request after
-	// 60 seconds and answers 504, so this is a little longer: Mosaic's own
-	// 504 ends a slow request, not us. A shorter timeout dropped requests
-	// Mosaic was still running, then sent more for the same data.
-	defaultTimeout = 75 * time.Second
+	// defaultHeaderTimeout bounds the wait for a response's headers, which is
+	// the time Mosaic spends on the query. Mosaic gives up after 60 seconds
+	// and answers 504, so this is a little longer: Mosaic's own 504 ends a
+	// slow request, not us. A 30-second limit dropped requests Mosaic was
+	// still running, then sent more for the same data.
+	defaultHeaderTimeout = 75 * time.Second
+
+	// defaultTimeout bounds a whole request, including reading the body. It
+	// is only a backstop for a stalled connection: a year of time entries
+	// for a large project is several MB, and cutting off a download Mosaic
+	// already answered would refetch it month by month.
+	defaultTimeout = 10 * time.Minute
 )
+
+// newDefaultHTTPClient returns the http.Client NewClient uses: the default
+// transport with defaultHeaderTimeout, and defaultTimeout overall.
+func newDefaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = defaultHeaderTimeout
+	return &http.Client{Transport: transport, Timeout: defaultTimeout}
+}
 
 // Client is an API client for the Mosaic time management platform.
 type Client struct {
@@ -48,15 +63,13 @@ type Client struct {
 // Additional configuration can be provided via functional options.
 func NewClient(apiKey, teamID string, opts ...Option) *Client {
 	c := &Client{
-		baseURL: defaultBaseURL,
-		apiKey:  apiKey,
-		teamID:  teamID,
-		tenant:  defaultTenant,
-		realmID: defaultRealmID,
-		httpClient: &http.Client{
-			Timeout: defaultTimeout,
-		},
-		pacer: &pacer{interval: DefaultRequestInterval},
+		baseURL:    defaultBaseURL,
+		apiKey:     apiKey,
+		teamID:     teamID,
+		tenant:     defaultTenant,
+		realmID:    defaultRealmID,
+		httpClient: newDefaultHTTPClient(),
+		pacer:      &pacer{interval: DefaultRequestInterval},
 	}
 	for _, opt := range opts {
 		opt(c)

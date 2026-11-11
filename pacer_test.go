@@ -171,3 +171,19 @@ func TestPauseWakesLaterSlots(t *testing.T) {
 		t.Errorf("caller started %s after start, want about 120ms (the end of the pause)", got)
 	}
 }
+
+// TestDefaultHTTPClientTimeouts checks that the default client waits longer
+// than Mosaic's 60-second limit for headers, and does not cut off a slow body.
+func TestDefaultHTTPClientTimeouts(t *testing.T) {
+	hc := newDefaultHTTPClient()
+	tr, ok := hc.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T, want *http.Transport", hc.Transport)
+	}
+	if tr.ResponseHeaderTimeout <= 60*time.Second {
+		t.Errorf("ResponseHeaderTimeout = %s, want more than Mosaic's 60s", tr.ResponseHeaderTimeout)
+	}
+	if hc.Timeout < 5*time.Minute {
+		t.Errorf("Timeout = %s, want a backstop of several minutes", hc.Timeout)
+	}
+}
