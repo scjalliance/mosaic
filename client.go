@@ -149,7 +149,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		if err != nil {
 			if resp.StatusCode == http.StatusTooManyRequests {
 				// Still a 429: hold requests back even though the body is lost.
-				c.pacer.pause(parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()))
+				c.pacer.pause(retryAfter(resp))
 			}
 			return fmt.Errorf("reading response body: %w", err)
 		}
@@ -217,14 +217,7 @@ func (c *Client) handleErrorResponse(resp *http.Response, body []byte) error {
 
 	// Handle rate limiting specially.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		// Measure an HTTP-date Retry-After against the server's own clock
-		// (its Date header) when it sent one, so local clock skew does not
-		// shorten the pause.
-		now := time.Now()
-		if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
-			now = d
-		}
-		rateLimitErr := &RateLimitError{Err: apiErr, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), now)}
+		rateLimitErr := &RateLimitError{Err: apiErr, RetryAfter: retryAfter(resp)}
 		return rateLimitErr
 	}
 
@@ -283,6 +276,17 @@ func (c *Client) RawGet(ctx context.Context, path string, query url.Values, resu
 // ignore the response body.
 func (c *Client) RawPut(ctx context.Context, path string, body any, result any) error {
 	return c.do(ctx, http.MethodPut, path, nil, body, result)
+}
+
+// retryAfter is the pause a 429 response asks for. An HTTP-date Retry-After
+// is measured against the server's own clock (its Date header) when it sent
+// one, so local clock skew does not change the pause.
+func retryAfter(resp *http.Response) time.Duration {
+	now := time.Now()
+	if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+		now = d
+	}
+	return parseRetryAfter(resp.Header.Get("Retry-After"), now)
 }
 
 // parseRetryAfter reads a Retry-After header value, either delay-seconds or
