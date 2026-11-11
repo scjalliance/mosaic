@@ -42,7 +42,14 @@ const (
 // newDefaultHTTPClient returns the http.Client NewClient uses: the default
 // transport with defaultHeaderTimeout, and defaultTimeout overall.
 func newDefaultHTTPClient() *http.Client {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Clone the default transport for its proxy and dial settings, unless
+	// something replaced it with another RoundTripper.
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		transport = transport.Clone()
+	} else {
+		transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
+	}
 	transport.ResponseHeaderTimeout = defaultHeaderTimeout
 	return &http.Client{Transport: transport, Timeout: defaultTimeout}
 }
