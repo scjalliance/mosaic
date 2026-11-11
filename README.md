@@ -47,7 +47,7 @@ func main() {
 
 ## Rate Limiting
 
-The Mosaic API enforces a rate limit of 300 requests per 5 minutes. When exceeded, methods return a `RateLimitError` containing the `Retry-After` duration from the response headers.
+The Mosaic API allows 500 requests per 5 minutes per API key ([docs](https://readme.mosaicapp.com/reference/authentication#api-rate-limit)). A `Client` starts its requests at least `DefaultRequestInterval` (650ms) apart to stay under it; `WithRequestInterval` changes or disables that. On a 429 the client holds back all of its requests for the `Retry-After` time (60 seconds when the header is missing) and retries up to 3 times, then returns a `RateLimitError`.
 
 ## Resources
 

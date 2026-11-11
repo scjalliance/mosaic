@@ -35,6 +35,7 @@ type Client struct {
 	tenant     string
 	realmID    string
 	httpClient *http.Client
+	pacer      *pacer // nil sends requests without spacing
 }
 
 // NewClient creates a new Mosaic API client with the given API key and team ID.
@@ -49,6 +50,7 @@ func NewClient(apiKey, teamID string, opts ...Option) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		pacer: &pacer{interval: DefaultRequestInterval},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -68,13 +70,17 @@ func (c *Client) apiPath(dataType string, segments ...string) string {
 // maxRetries is the number of times to retry a request after a rate limit.
 const maxRetries = 3
 
-// minRetryDelay is the minimum delay between retries when the server returns
-// a Retry-After of 0 seconds.
+// minRetryDelay is the least delay before retrying after a 429 whose
+// Retry-After is under it. A 429 with no Retry-After waits rateLimitPause.
 const minRetryDelay = 2 * time.Second
 
 // do executes an HTTP request against the Mosaic API, handling authentication
 // headers, JSON encoding/decoding, error mapping, and automatic retry on rate
 // limit (429) responses.
+//
+// Every attempt first waits its turn on the Client's pacer, so requests start
+// at least the request interval apart. A 429 pauses the pacer, which holds
+// back every request from the Client, not only the one that got the 429.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any, result any) error {
 	// Marshal the body once so we can replay it on retries.
 	var bodyBytes []byte
@@ -87,6 +93,10 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 
 	for attempt := range maxRetries + 1 {
+		if err := c.pacer.wait(ctx); err != nil {
+			return err
+		}
+
 		var bodyReader io.Reader
 		if bodyBytes != nil {
 			bodyReader = bytes.NewReader(bodyBytes)
@@ -136,7 +146,10 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			var rlErr *RateLimitError
 			if errors.As(apiErr, &rlErr) && attempt < maxRetries {
 				delay := rlErr.RetryAfter
-				if delay < minRetryDelay {
+				switch {
+				case delay <= 0:
+					delay = rateLimitPause
+				case delay < minRetryDelay:
 					delay = minRetryDelay
 				}
 				slog.Warn("rate limited, retrying",
@@ -145,6 +158,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 					"retry_after", delay,
 					"path", path,
 				)
+				if c.pacer != nil {
+					// The wait at the top of the loop sleeps out the pause.
+					c.pacer.pause(delay)
+					continue
+				}
 				select {
 				case <-time.After(delay):
 					continue
